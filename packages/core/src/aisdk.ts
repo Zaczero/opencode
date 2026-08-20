@@ -841,6 +841,7 @@ function errorBody(value: unknown) {
 const ProviderErrorDetail = Schema.Struct({
   message: Schema.optionalKey(Schema.String),
   code: Schema.optionalKey(Schema.Union([Schema.String, Schema.Finite])),
+  detail: Schema.optionalKey(Schema.String),
 })
 const ProviderErrorBody = Schema.Struct({
   ...ProviderErrorDetail.fields,
@@ -859,7 +860,9 @@ function providerErrorMessage(error: APICallError) {
   const data = Option.getOrUndefined(decodeProviderError(error.data))
   const body = Option.getOrUndefined(decodeProviderError(error.responseBody))
   const details = [data?.error, data, body?.error, body]
-  const message = details.map((detail) => detail?.message).find((value) => value?.trim())
+  const message = details
+    .flatMap((detail) => [detail?.message, detail?.detail])
+    .find((value) => value?.trim())
   const value = details.map((detail) => detail?.code).find((value) => value !== undefined)
   const code = value === undefined ? undefined : String(value)
   const prefix =

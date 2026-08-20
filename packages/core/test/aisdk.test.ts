@@ -862,6 +862,18 @@ it.effect("prefers a structured provider message over the code fallback", () =>
   }),
 )
 
+it.effect("preserves provider detail fields in AI SDK errors", () =>
+  Effect.gen(function* () {
+    const error = yield* streamFailure(
+      apiCallError({
+        statusCode: 400,
+        responseBody: '{"detail":"The request is invalid"}',
+      }),
+    )
+    expect(error.reason.message).toBe("The request is invalid")
+  }),
+)
+
 it.effect("falls back to the status alone for malformed response bodies", () =>
   Effect.gen(function* () {
     const error = yield* streamFailure(

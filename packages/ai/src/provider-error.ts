@@ -59,6 +59,20 @@ export const isContextOverflowFailure = (failure: unknown) =>
     : Schema.is(ProviderErrorEvent)(failure) && failure.classification === "context-overflow"
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+const ProviderErrorCode = Schema.Union([Schema.String, Schema.Finite])
+const ProviderErrorDetail = Schema.Struct({
+  message: Schema.optionalKey(Schema.String),
+  code: Schema.optionalKey(ProviderErrorCode),
+  detail: Schema.optionalKey(Schema.Unknown),
+})
+const ProviderErrorBody = Schema.Struct({
+  ...ProviderErrorDetail.fields,
+  error: Schema.optionalKey(ProviderErrorDetail),
+})
+
+export const decodeProviderError = Schema.decodeUnknownOption(
+  Schema.Union([ProviderErrorBody, Schema.fromJsonString(ProviderErrorBody)]),
+)
 // OpenCode Zen reports account caps as typed 429/402 errors that are not throttles.
 const QUOTA_CODES = new Set([
   "insufficient_quota",

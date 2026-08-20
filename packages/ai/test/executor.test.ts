@@ -279,6 +279,48 @@ describe("RequestExecutor", () => {
     ),
   )
 
+  it.effect("preserves provider detail fields", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectAIError(error)
+      expect(error.reason.message).toBe("The request is invalid")
+    }).pipe(Effect.provide(fixedResponse('{"detail":"The request is invalid"}', { status: 400 }))),
+  )
+
+  it.effect("preserves top-level provider messages with structured detail", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectAIError(error)
+      expect(error.reason.message).toBe("The request is invalid")
+    }).pipe(
+      Effect.provide(
+        fixedResponse(JSON.stringify({ message: "The request is invalid", detail: { field: "prompt" } }), {
+          status: 400,
+        }),
+      ),
+    ),
+  )
+
+  it.effect("preserves nested provider messages with structured detail", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectAIError(error)
+      expect(error.reason.message).toBe("The request is invalid")
+    }).pipe(
+      Effect.provide(
+        fixedResponse(JSON.stringify({ error: { message: "The request is invalid", detail: { field: "prompt" } } }), {
+          status: 400,
+        }),
+      ),
+    ),
+  )
+
   it.effect("falls back when structured provider messages are empty", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service

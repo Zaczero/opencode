@@ -23,10 +23,10 @@ describe("ToolStream", () => {
 
       expect(first.events).toEqual([
         { type: "tool-input-start", id: "call_1", name: "lookup" },
-        { type: "tool-input-delta", id: "call_1", name: "lookup", text: '{"query"', input: {} },
+        { type: "tool-input-delta", id: "call_1", name: "lookup", text: '{"query"' },
       ])
       expect(second.events).toEqual([
-        { type: "tool-input-delta", id: "call_1", name: "lookup", text: ':"weather"}', input: { query: "weather" } },
+        { type: "tool-input-delta", id: "call_1", name: "lookup", text: ':"weather"}' },
       ])
       expect(finished).toEqual({
         tools: {},
@@ -38,7 +38,7 @@ describe("ToolStream", () => {
     }),
   )
 
-  it.effect("exposes cumulative partial string values", () =>
+  it.effect("emits raw partial string values without parsing", () =>
     Effect.gen(function* () {
       const result = ToolStream.appendOrStart(
         ADAPTER,
@@ -54,12 +54,11 @@ describe("ToolStream", () => {
         id: "call_1",
         name: "lookup",
         text: '{"query":"wea',
-        input: { query: "wea" },
       })
     }),
   )
 
-  it.effect("defaults partial input to an empty object when the accumulated value cannot be parsed", () =>
+  it.effect("does not parse malformed accumulated values in a delta", () =>
     Effect.gen(function* () {
       const result = ToolStream.appendOrStart(
         ADAPTER,
@@ -72,12 +71,12 @@ describe("ToolStream", () => {
 
       expect(result.events).toEqual([
         { type: "tool-input-start", id: "call_1", name: "lookup" },
-        { type: "tool-input-delta", id: "call_1", name: "lookup", text: "x", input: {} },
+        { type: "tool-input-delta", id: "call_1", name: "lookup", text: "x" },
       ])
     }),
   )
 
-  it.effect("keeps accumulated identity when later deltas contain empty strings", () =>
+  it.effect("keeps accumulated identity and ignores empty deltas", () =>
     Effect.gen(function* () {
       const first = ToolStream.appendOrStart(
         ADAPTER,
@@ -95,7 +94,17 @@ describe("ToolStream", () => {
         "missing tool",
       )
       if (ToolStream.isError(second)) return yield* second
-      const finished = yield* ToolStream.finish(ADAPTER, second.tools, 0)
+      const empty = ToolStream.appendOrStart(
+        ADAPTER,
+        second.tools,
+        0,
+        { id: "", name: "", text: "" },
+        "missing tool",
+      )
+      if (ToolStream.isError(empty)) return yield* empty
+      expect(empty.events).toEqual([])
+      expect(empty.tools).toEqual(second.tools)
+      const finished = yield* ToolStream.finish(ADAPTER, empty.tools, 0)
 
       expect(finished.events).toEqual([
         { type: "tool-input-end", id: "call_1", name: "lookup" },

@@ -308,7 +308,7 @@ const textPage = (bytes: Uint8Array, eof: boolean, page: PageInput) => {
   }
   if (next === undefined && entries.length >= limit && (!eof || offset - 1 + entries.length < available.length))
     next = offset + entries.length
-  if (!eof && next === undefined) return
+  if (!eof && next === undefined) return undefined
 
   const consumedLines = next === undefined ? available.length : next - 1
   const consumed = consumedLines === 0 ? 0 : (nthNewline(bytes, consumedLines) ?? bytes.length)
@@ -325,7 +325,7 @@ type TextNode =
 
 const textLeaf = (bytes: Uint8Array): Extract<TextNode, { readonly type: "leaf" }> => {
   let lines = 0
-  for (const byte of bytes) if (byte === 10) lines++
+  for (let index = 0; index < bytes.length; index++) if (bytes[index] === 10) lines++
   return { type: "leaf", bytes, summary: { bytes: bytes.length, lines } }
 }
 
@@ -361,7 +361,8 @@ const textOffset = (tree: TextNode, newline: number) => {
     if (!child) return tree.summary.bytes
     node = child
   }
-  for (const [index, byte] of node.bytes.entries()) {
+  for (let index = 0; index < node.bytes.length; index++) {
+    const byte = node.bytes[index]
     if (byte !== 10) continue
     remaining--
     if (remaining === 0) return offset + index + 1
@@ -371,11 +372,13 @@ const textOffset = (tree: TextNode, newline: number) => {
 
 const nthNewline = (bytes: Uint8Array, count: number) => {
   let found = 0
-  for (const [index, byte] of bytes.entries()) {
+  for (let index = 0; index < bytes.length; index++) {
+    const byte = bytes[index]
     if (byte !== 10) continue
     found++
     if (found === count) return index + 1
   }
+  return undefined
 }
 
 const layer = Layer.effect(

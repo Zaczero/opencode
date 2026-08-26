@@ -136,6 +136,35 @@ describe("ReadToolFileSystem", () => {
     }),
   )
 
+  it.effect("returns an empty text page", () =>
+    Effect.gen(function* () {
+      const { environment, files, directory } = yield* fixture
+      const file = path.join(directory, "empty.txt")
+      yield* files.writeFileString(file, "")
+
+      const result = yield* ReadToolFileSystem.read(environment, absolute(file), "empty.txt", { limit: 1 })
+
+      expect(result).toMatchObject({ type: "text-page", content: "", offset: 1, truncated: false })
+    }),
+  )
+
+  it.effect("settles a no-newline page at EOF", () =>
+    Effect.gen(function* () {
+      const { environment, files, directory } = yield* fixture
+      const file = path.join(directory, "no-newline.txt")
+      yield* files.writeFileString(file, "a".repeat(256 * 1024 + 1))
+
+      const result = yield* ReadToolFileSystem.read(environment, absolute(file), "no-newline.txt", { limit: 1 })
+
+      expect(result).toMatchObject({
+        type: "text-page",
+        content: `${"a".repeat(2_000)}... (line truncated to 2000 chars)`,
+        offset: 1,
+        truncated: false,
+      })
+    }),
+  )
+
   it.effect("pages text with one-based offsets", () =>
     Effect.gen(function* () {
       const { environment, files, directory } = yield* fixture
@@ -164,6 +193,22 @@ describe("ReadToolFileSystem", () => {
         content: `${"a".repeat(2_000)}... (line truncated to 2000 chars)`,
         truncated: false,
       })
+    }),
+  )
+
+  it.effect("returns content exactly at the byte page boundary", () =>
+    Effect.gen(function* () {
+      const { environment, files, directory } = yield* fixture
+      const file = path.join(directory, "page-boundary.txt")
+      const lines = [...Array(25)].map(() => "a".repeat(1_968))
+      lines.push("a".repeat(1_975))
+      yield* files.writeFileString(file, lines.join("\n"))
+
+      const result = yield* ReadToolFileSystem.read(environment, absolute(file), "page-boundary.txt", { limit: 26 })
+
+      expect(result).toMatchObject({ type: "text-page", offset: 1, truncated: false })
+      expect(result.type === "text-page" ? result.content.split("\n") : []).toHaveLength(26)
+      expect(result.type === "text-page" ? Buffer.byteLength(result.content) : 0).toBe(50 * 1024)
     }),
   )
 
@@ -254,6 +299,46 @@ describe("ReadToolFileSystem", () => {
       })
 
       expect(result).toMatchObject({ type: "text-page", content: "second", offset: 2, truncated: false })
+    }),
+  )
+
+  it.effect("handles a newline at the next chunk boundary", () =>
+    Effect.gen(function* () {
+      const { environment, files, directory } = yield* fixture
+      const file = path.join(directory, "newline-boundary.txt")
+      yield* files.writeFileString(file, `${"a".repeat(256 * 1024)}\nsecond\n`)
+      const ranges: Array<{ readonly offset: number; readonly length: number } | undefined> = []
+      const tracked = {
+        ...environment,
+        read: (value: string, range?: { readonly offset: number; readonly length: number }) =>
+          Effect.sync(() => ranges.push(range)).pipe(Effect.andThen(environment.read(value, range))),
+      }
+
+      const result = yield* ReadToolFileSystem.read(tracked, absolute(file), "newline-boundary.txt", {
+        offset: 2,
+        limit: 1,
+      })
+
+      expect(result).toMatchObject({ type: "text-page", content: "second", offset: 2, truncated: false })
+      expect(ranges).toEqual([
+        { offset: 0, length: 256 * 1024 },
+        { offset: 256 * 1024, length: 256 * 1024 },
+      ])
+    }),
+  )
+
+  it.effect("locates a line across multiple chunks", () =>
+    Effect.gen(function* () {
+      const { environment, files, directory } = yield* fixture
+      const file = path.join(directory, "multiple-chunks.txt")
+      yield* files.writeFileString(file, `one\n${"a".repeat(2 * 256 * 1024)}\nthree\n`)
+
+      const result = yield* ReadToolFileSystem.read(environment, absolute(file), "multiple-chunks.txt", {
+        offset: 3,
+        limit: 1,
+      })
+
+      expect(result).toMatchObject({ type: "text-page", content: "three", offset: 3, truncated: false })
     }),
   )
 

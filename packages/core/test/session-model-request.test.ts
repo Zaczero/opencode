@@ -217,7 +217,62 @@ describe("SessionModelRequest.unsupportedParts", () => {
 
   test("preserves supported media", () => {
     const message = Message.user({ type: "media", mediaType: "image/png", data: "aGVsbG8=" })
-    expect(unsupportedParts([message], capabilities(["text", "image"]))[0]?.content).toEqual(message.content)
+    expect(unsupportedParts([message], capabilities(["text", "image"]))[0]).toBe(message)
+  })
+
+  test("normalizes plain messages inserted by hooks", () => {
+    const messages = unsupportedParts(
+      [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      capabilities(["text"]),
+    )
+
+    expect(messages[0]).toBeInstanceOf(Message)
+  })
+
+  test("preserves supported nested files", () => {
+    const message = Message.tool(
+      ToolResultPart.make({
+        id: "call_1",
+        name: "read",
+        result: {
+          type: "content",
+          value: [{ type: "file", uri: "file:///tmp/logo.png", mime: "image/png", name: "logo.png" }],
+        },
+      }),
+    )
+
+    const result = unsupportedParts([message], capabilities(["text", "image"]))
+
+    expect(result[0]).toBe(message)
+    expect(result[0]?.content[0]).toBe(message.content[0])
+  })
+
+  test("does not mutate messages when replacing nested files", () => {
+    const message = Message.tool(
+      ToolResultPart.make({
+        id: "call_1",
+        name: "read",
+        result: {
+          type: "content",
+          value: [{ type: "file", uri: "file:///tmp/logo.png", mime: "image/png", name: "logo.png" }],
+        },
+      }),
+    )
+    const originalContent = message.content
+    const originalPart = message.content[0]
+    if (originalPart?.type !== "tool-result" || originalPart.result.type !== "content")
+      throw new Error("Expected tool result")
+    const originalValue = originalPart.result.value
+
+    const result = unsupportedParts([message], capabilities(["text"]))
+
+    expect(result[0]).not.toBe(message)
+    expect(message.content).toBe(originalContent)
+    expect(message.content[0]).toBe(originalPart)
+    expect(originalPart.result.value).toBe(originalValue)
+    expect(originalPart.result.value).toEqual([
+      { type: "file", uri: "file:///tmp/logo.png", mime: "image/png", name: "logo.png" },
+    ])
   })
 })
 

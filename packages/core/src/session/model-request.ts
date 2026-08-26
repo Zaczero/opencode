@@ -117,27 +117,31 @@ const unsupportedMedia = (mime: string, name: string | undefined, capabilities: 
 }
 
 export const unsupportedParts = (messages: LLMRequest["messages"], capabilities: Model.Capabilities) =>
-  messages.map((message) =>
-    Message.make({
-      ...message,
-      content: message.content.map((part) => {
-        if (part.type === "media") {
-          return unsupportedMedia(part.mediaType, part.filename, capabilities) ?? part
-        }
-        if (part.type !== "tool-result" || part.result.type !== "content") return part
-        return {
-          ...part,
-          result: {
-            ...part.result,
-            value: part.result.value.map((item: Content) => {
-              if (item.type !== "file") return item
-              return unsupportedMedia(item.mime, item.name, capabilities) ?? item
-            }),
-          },
-        }
-      }),
-    }),
-  )
+  messages.map((message) => {
+    let messageChanged = false
+    const content = message.content.map((part) => {
+      if (part.type === "media") {
+        const replacement = unsupportedMedia(part.mediaType, part.filename, capabilities)
+        if (!replacement) return part
+        messageChanged = true
+        return replacement
+      }
+      if (part.type !== "tool-result" || part.result.type !== "content") return part
+      let resultChanged = false
+      const value = part.result.value.map((item: Content) => {
+        if (item.type !== "file") return item
+        const replacement = unsupportedMedia(item.mime, item.name, capabilities)
+        if (!replacement) return item
+        resultChanged = true
+        return replacement
+      })
+      if (!resultChanged) return part
+      messageChanged = true
+      return { ...part, result: { ...part.result, value } }
+    })
+    if (!messageChanged) return Message.make(message)
+    return Message.make({ ...message, content })
+  })
 
 export const boundImages = (messages: LLMRequest["messages"]) => {
   const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")

@@ -75,6 +75,7 @@ export function fromPromise(plugin: Plugin) {
         const [{ ClientApi }, { OpenCodeEvent }] = yield* Effect.promise(() =>
           Promise.all([import("@opencode-ai/protocol/client"), import("@opencode-ai/protocol/groups/event")]),
         )
+        const encodeEvent = Schema.encodeUnknownEffect(OpenCodeEvent)
         const AgentEndpoints = ClientApi.groups["server.agent"].endpoints
         const CommandEndpoints = ClientApi.groups["server.command"].endpoints
         const GenerateEndpoints = ClientApi.groups["server.generate"].endpoints
@@ -183,7 +184,7 @@ export function fromPromise(plugin: Plugin) {
             subscribe: () =>
               Stream.toAsyncIterable(
                 host.event.subscribe().pipe(
-                  Stream.mapEffect((event) => Schema.encodeUnknownEffect(OpenCodeEvent)(event)),
+                  Stream.mapEffect((event) => encodeEvent(event)),
                   Stream.map((event) => event as unknown as PromiseEvent),
                 ),
               ),

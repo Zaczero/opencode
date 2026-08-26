@@ -128,7 +128,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
     external: ["node-gyp"],
     format: "esm",
     minify: true,
-    sourcemap: Script.channel === "dev" || Script.channel === "local" ? "inline" : "none",
+    sourcemap: "inline",
     splitting: true,
     compile: {
       autoloadBunfig: false,

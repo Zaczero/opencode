@@ -27,6 +27,8 @@ interface CompiledEndpoint {
 
 const compiledEndpoints = new WeakMap<object, CompiledEndpoint>()
 const JsonInput = Schema.fromJsonString(Schema.Unknown)
+const encodeJsonInput = Schema.encodeUnknownEffect(JsonInput)
+const decodeJsonInput = Schema.decodeUnknownEffect(JsonInput)
 
 interface HostRpcCallContext {
   readonly error: (type: string, message: string, data?: unknown) => unknown
@@ -221,6 +223,7 @@ export function fromPromise(plugin: Plugin) {
         const [{ ClientApi }, { OpenCodeEvent }] = yield* Effect.promise(() =>
           Promise.all([import("@opencode/protocol/client"), import("@opencode/protocol/groups/event")]),
         )
+        const encodeEvent = Schema.encodeUnknownEffect(OpenCodeEvent)
         const AgentEndpoints = ClientApi.groups["server.agent"].endpoints
         const CommandEndpoints = ClientApi.groups["server.command"].endpoints
         const ExperimentalEndpoints = ClientApi.groups["server.experimental"].endpoints
@@ -267,9 +270,7 @@ export function fromPromise(plugin: Plugin) {
           return ((input?: unknown) =>
             Effect.gen(function* () {
               // Match the generated Promise client, whose request body crosses JSON before endpoint decoding.
-              const normalized = yield* Schema.encodeUnknownEffect(JsonInput)(input ?? {}).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(JsonInput)),
-              )
+              const normalized = yield* encodeJsonInput(input ?? {}).pipe(Effect.flatMap(decodeJsonInput))
               const decoded = yield* Effect.forEach(compiled.decode, (decode) => decode(normalized))
               const result = yield* method(Object.assign({}, ...decoded) as never)
               if (compiled.noContent) return undefined
@@ -325,7 +326,7 @@ export function fromPromise(plugin: Plugin) {
             subscribe: (options) =>
               streams(
                 host.event.subscribe().pipe(
-                  Stream.mapEffect((event) => Schema.encodeUnknownEffect(OpenCodeEvent)(event)),
+                  Stream.mapEffect((event) => encodeEvent(event)),
                   Stream.map((event) => event as unknown as PromiseEvent),
                 ),
                 options,

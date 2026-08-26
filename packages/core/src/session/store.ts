@@ -54,7 +54,10 @@ export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
   readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
-  readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
+  readonly context: (
+    sessionID: Session.ID,
+    cache?: SessionHistory.Cache,
+  ) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly message: (
     messageID: SessionMessage.ID,
   ) => Effect.Effect<{ readonly sessionID: Session.ID; readonly message: SessionMessage.Info } | undefined>
@@ -176,7 +179,9 @@ const layer = Layer.effect(
           SessionHistory.decodeMessageRow,
         )
       }),
-      context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID, "latest")),
+      context: Effect.fn("SessionStore.context")((sessionID, cache) =>
+        SessionHistory.load(db, sessionID, "latest", cache),
+      ),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
         const row = yield* db
           .select()

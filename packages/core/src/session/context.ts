@@ -52,7 +52,7 @@ export interface Interface {
   /** Selects the Session, agent, instructions, and tools used by subsequent work. */
   readonly select: (sessionID: SessionSchema.ID) => Effect.Effect<Selection, AgentNotFoundError>
   /** Resolves the model and active history for that selection. */
-  readonly load: (selection: Selection) => Effect.Effect<Loaded, SessionRunnerModel.Error>
+  readonly load: (selection: Selection, cache?: SessionHistory.Cache) => Effect.Effect<Loaded, SessionRunnerModel.Error>
   readonly resolveModel: (
     session: SessionSchema.Info,
   ) => Effect.Effect<SessionRunnerModel.Resolved, SessionRunnerModel.Error>
@@ -157,9 +157,9 @@ const layer = Layer.effect(
       }
     })
 
-    const load = Effect.fn("SessionContext.load")(function* (selection: Selection) {
+    const load = Effect.fn("SessionContext.load")(function* (selection: Selection, cache?: SessionHistory.Cache) {
       const model = yield* resolveModel(selection.session)
-      const history = yield* SessionHistory.entriesForRunner(db, selection.session.id, selection.instructions)
+      const history = yield* SessionHistory.entriesForRunner(db, selection.session.id, selection.instructions, cache)
       return {
         session: selection.session,
         agent: selection.agent,

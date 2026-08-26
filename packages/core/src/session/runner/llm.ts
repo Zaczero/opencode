@@ -8,6 +8,7 @@ import { InstructionState } from "../instruction-state.js"
 import { SessionCompaction } from "../compaction.js"
 import { SessionContext } from "../context.js"
 import { SessionEvent } from "../event.js"
+import { SessionHistory } from "../history.js"
 import { SessionInbox } from "../inbox.js"
 import { SessionModelRequest } from "../model-request.js"
 import { SessionModelTransport } from "../model-transport.js"
@@ -78,6 +79,7 @@ const layer = Layer.effect(
       readonly promotable?: SessionInbox.Promotable
     }) {
       const sessionID = input.sessionID
+      const history = SessionHistory.makeCache()
       let force = input.force
       let continuing = input.continuation !== undefined
       let step = input.continuation?.step ?? 1
@@ -95,7 +97,7 @@ const layer = Layer.effect(
           return DrainResult.Complete()
       }
       yield* plugins.flush
-      yield* settleStaleToolCalls(sessionID)
+      yield* settleStaleToolCalls(sessionID, history)
 
       const advanceToStep = Effect.fn("SessionRunner.advanceToStep")(() =>
         Effect.uninterruptibleMask((restore) =>
@@ -143,7 +145,7 @@ const layer = Layer.effect(
                       session,
                       resolveModel: context.resolveModel,
                       prepare: context.prepare,
-                      messages: yield* store.context(sessionID),
+                      messages: yield* store.context(sessionID, history),
                       inputID: pending.id,
                       started: true,
                     })
@@ -179,7 +181,7 @@ const layer = Layer.effect(
                       onlyIfMissing: true,
                     })
                   if (promoted > 0) step = 1
-                  return { _tag: "Ready" as const, context: yield* context.load(selected) }
+                  return { _tag: "Ready" as const, context: yield* context.load(selected, history) }
                 }),
               )
             }
@@ -190,7 +192,7 @@ const layer = Layer.effect(
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step)
+        continuing = yield* runStep(next.context, step, history)
         step++
         force = false
         entering = false
@@ -205,7 +207,11 @@ const layer = Layer.effect(
     })
 
     /** Owns logical Step policy; each attempt owns its streaming, tools, and durable settlement. */
-    const runStep = Effect.fn("SessionRunner.runStep")(function* (first: SessionContext.Loaded, step: number) {
+    const runStep = Effect.fn("SessionRunner.runStep")(function* (
+      first: SessionContext.Loaded,
+      step: number,
+      history: SessionHistory.Cache,
+    ) {
       const sessionID = first.session.id
       let assistantMessageID = SessionMessage.ID.create()
       const retry = yield* Schedule.toStepWithSleep(SessionRunnerRetry.schedule(bus, sessionID))
@@ -214,7 +220,8 @@ const layer = Layer.effect(
       let recoverContinuation = true
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
+        const loaded =
+          initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap((selection) => context.load(selection, history))))
         initial = undefined
         const compactionInput = {
           session: loaded.session,
@@ -291,8 +298,9 @@ const layer = Layer.effect(
 
     const settleStaleToolCalls = Effect.fn("SessionRunner.settleStaleToolCalls")(function* (
       sessionID: SessionSchema.ID,
+      history: SessionHistory.Cache,
     ) {
-      for (const message of yield* store.context(sessionID)) {
+      for (const message of yield* store.context(sessionID, history)) {
         if (message.type !== "assistant") continue
         for (const tool of message.content) {
           if (tool.type !== "tool" || (tool.state.status !== "streaming" && tool.state.status !== "running")) continue

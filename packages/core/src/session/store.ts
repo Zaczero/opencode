@@ -13,7 +13,10 @@ import { fromRow } from "./info.js"
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
-  readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
+  readonly context: (
+    sessionID: Session.ID,
+    cache?: SessionHistory.Cache,
+  ) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly message: (
     messageID: SessionMessage.ID,
   ) => Effect.Effect<{ readonly sessionID: Session.ID; readonly message: SessionMessage.Info } | undefined>
@@ -55,7 +58,7 @@ const layer = Layer.effect(
         const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
         return row ? fromRow(row) : undefined
       }),
-      context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID)),
+      context: Effect.fn("SessionStore.context")((sessionID, cache) => SessionHistory.load(db, sessionID, cache)),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
         const row = yield* db
           .select()

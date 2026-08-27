@@ -9,9 +9,7 @@ const EVENT_TYPES = new Set(["agent.updated", "provider.updated", "model.updated
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const bus = yield* Bus.Service
-    const unsubscribe = yield* bus.listen((event) =>
-      EVENT_TYPES.has(event.type) ? Effect.logInfo("event", { event }) : Effect.void,
-    )
+    const unsubscribe = yield* bus.listen((event) => Effect.logInfo("event", { event }), { types: EVENT_TYPES })
     yield* Effect.addFinalizer(() => unsubscribe)
   }),
 )

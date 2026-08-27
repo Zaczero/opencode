@@ -68,7 +68,7 @@ export const Plugin = define({
       Stream.runForEach(notify),
       Effect.forkScoped({ startImmediately: true }),
     )
-    yield* ctx.event.subscribe().pipe(
+    yield* ctx.event.subscribe(["config.updated"]).pipe(
       Stream.filter((event) => event.type === "config.updated"),
       Stream.runForEach(notify),
       Effect.forkScoped({ startImmediately: true }),

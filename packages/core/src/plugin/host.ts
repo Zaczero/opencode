@@ -261,12 +261,14 @@ export const make = Effect.fn("PluginHost.make")(function* (
           const definition = EventManifest.ServerDefinitions.find((definition) => definition.type === type)
           return definition ? [definition] : []
         })
-        if (types.length === 1) {
-          const definition = definitions[0]
-          if (definition) return bus.subscribe(definition)
+        if (types.some((type) => type.startsWith("rpc."))) {
+          const selected = new Set(types)
+          return publicEvents().pipe(Stream.filter((event) => selected.has(event.type)))
         }
-        const selected = new Set(types)
-        return publicEvents().pipe(Stream.filter((event) => selected.has(event.type)))
+        const [first, ...rest] = definitions
+        if (!first) return Stream.never
+        if (rest.length === 0) return bus.subscribe(first)
+        return bus.subscribe([first, ...rest] as readonly [typeof first, ...typeof rest])
       },
     },
     experimental: {

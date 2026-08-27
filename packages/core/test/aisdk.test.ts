@@ -22,7 +22,7 @@ import {
 import { LLMClient, RequestExecutor } from "@opencode/ai/route"
 import { compileRequest } from "@opencode/ai/route/client"
 import { expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { testEffect } from "./lib/effect"
 
@@ -150,6 +150,186 @@ it.effect("uses canonical names and metadata without merging connection cache pa
     expect(resolved.route.model({ id: "another-model" })).toMatchObject({ provider: "openai" })
     const prepared = yield* compileRequest(LLM.request({ model: resolved, prompt: "Hello" }))
     expect(prepared.body.providerOptions).toEqual({ openai: { reasoningEffort: "high" } })
+  }),
+)
+
+it.effect("invalidates cached AI SDK products when hooks change", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    let sdkLoads = 0
+    let languageLoads = 0
+    const sdk = yield* aisdk.hook.sdk((event) =>
+      Effect.sync(() => {
+        sdkLoads++
+        event.sdk = { languageModel: () => ({ sdk: sdkLoads }) }
+      }),
+    )
+    const language = yield* aisdk.hook.language((event) =>
+      Effect.sync(() => {
+        languageLoads++
+        event.language = { language: languageLoads } as unknown as LanguageModelV3
+      }),
+    )
+    const input = model("cache-lifecycle")
+    const first = yield* aisdk.language(input)
+    expect(yield* aisdk.language(input)).toBe(first)
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(1)
+
+    const languageReplacement = yield* aisdk.hook.language((event) =>
+      Effect.sync(() => {
+        languageLoads++
+        event.language = { language: languageLoads } as unknown as LanguageModelV3
+      }),
+    )
+    const afterLanguageChange = yield* aisdk.language(input)
+    expect(afterLanguageChange).not.toBe(first)
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(3)
+    yield* languageReplacement.dispose
+    const afterLanguageDispose = yield* aisdk.language(input)
+    expect(afterLanguageDispose).not.toBe(afterLanguageChange)
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(4)
+
+    const sdkReplacement = yield* aisdk.hook.sdk((event) =>
+      Effect.sync(() => {
+        sdkLoads++
+        event.sdk = { languageModel: () => ({ sdk: sdkLoads }) }
+      }),
+    )
+    const afterSDKChange = yield* aisdk.language(input)
+    expect(afterSDKChange).not.toBe(afterLanguageDispose)
+    expect(sdkLoads).toBe(3)
+    expect(languageLoads).toBe(5)
+    yield* sdkReplacement.dispose
+    const afterSDKDispose = yield* aisdk.language(input)
+    expect(afterSDKDispose).not.toBe(afterSDKChange)
+    expect(sdkLoads).toBe(4)
+    expect(languageLoads).toBe(6)
+    yield* language.dispose
+    yield* sdk.dispose
+  }),
+)
+
+it.effect("does not repopulate AI SDK caches after an in-flight hook replacement", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    let sdkLoads = 0
+    const input = model("cache-in-flight")
+    const initial = yield* aisdk.hook.sdk((event) =>
+      Effect.gen(function* () {
+        sdkLoads++
+        yield* Deferred.succeed(started, undefined)
+        yield* Deferred.await(release)
+        event.sdk = { languageModel: () => ({ version: "initial" }) }
+      }),
+    )
+    const inFlight = yield* aisdk.language(input).pipe(Effect.forkChild)
+    yield* Deferred.await(started)
+
+    yield* initial.dispose
+    const replacement = yield* aisdk.hook.sdk((event) =>
+      Effect.sync(() => {
+        sdkLoads++
+        event.sdk = { languageModel: () => ({ version: "replacement" }) }
+      }),
+    )
+    yield* Deferred.succeed(release, undefined)
+
+    expect((yield* Fiber.join(inFlight)) as unknown).toEqual({ version: "initial" })
+    expect((yield* aisdk.language(input)) as unknown).toEqual({ version: "replacement" })
+    expect(sdkLoads).toBe(2)
+    yield* replacement.dispose
+  }),
+)
+
+it.effect("reuses the AI SDK cache across an in-flight language hook replacement", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    const started = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    let sdkLoads = 0
+    let languageLoads = 0
+    const input = model("language-cache-in-flight")
+    yield* aisdk.hook.sdk((event) =>
+      Effect.sync(() => {
+        sdkLoads++
+        event.sdk = { languageModel: () => ({ version: "sdk" }) }
+      }),
+    )
+    const initial = yield* aisdk.hook.language((event) =>
+      Effect.gen(function* () {
+        languageLoads++
+        yield* Deferred.succeed(started, undefined)
+        yield* Deferred.await(release)
+        event.language = { version: "initial" } as unknown as LanguageModelV3
+      }),
+    )
+    const inFlight = yield* aisdk.language(input).pipe(Effect.forkChild)
+    yield* Deferred.await(started)
+
+    yield* initial.dispose
+    const replacement = yield* aisdk.hook.language((event) =>
+      Effect.sync(() => {
+        languageLoads++
+        event.language = { version: "replacement" } as unknown as LanguageModelV3
+      }),
+    )
+    yield* Deferred.succeed(release, undefined)
+
+    expect((yield* Fiber.join(inFlight)) as unknown).toEqual({ version: "initial" })
+    expect((yield* aisdk.language(input)) as unknown).toEqual({ version: "replacement" })
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(2)
+    yield* replacement.dispose
+  }),
+)
+
+it.effect("disposes only one duplicate AI SDK hook registration", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    let calls = 0
+    const callback = (event: AISDK.SDKEvent) =>
+      Effect.sync(() => {
+        calls++
+        event.sdk = { languageModel: () => ({ calls }) }
+      })
+    const first = yield* aisdk.hook.sdk(callback)
+    const second = yield* aisdk.hook.sdk(callback)
+
+    yield* first.dispose
+    yield* aisdk.runSDK({ model: model("duplicate"), package: "test", options: {} })
+    expect(calls).toBe(1)
+
+    yield* second.dispose
+    yield* aisdk.runSDK({ model: model("duplicate"), package: "test", options: {} })
+    expect(calls).toBe(1)
+  }),
+)
+
+it.effect("keeps a replacement AI SDK hook when an earlier scope closes", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    const initialScope = yield* Scope.fork(yield* Scope.Scope)
+    const replacementScope = yield* Scope.fork(yield* Scope.Scope)
+    let calls = 0
+    const callback = (event: AISDK.SDKEvent) =>
+      Effect.sync(() => {
+        calls++
+        event.sdk = { languageModel: () => ({ calls }) }
+      })
+
+    yield* aisdk.hook.sdk(callback).pipe(Scope.provide(initialScope))
+    yield* aisdk.hook.sdk(callback).pipe(Scope.provide(replacementScope))
+    yield* Scope.close(initialScope, Exit.void)
+
+    yield* aisdk.runSDK({ model: model("scope"), package: "test", options: {} })
+    expect(calls).toBe(1)
+
+    yield* Scope.close(replacementScope, Exit.void)
   }),
 )
 
@@ -792,6 +972,14 @@ it.effect("preserves valid and omits malformed AI SDK stream provider metadata",
     expect(response.events.find(LLMEvent.is.textEnd)?.providerMetadata).toBeUndefined()
     expect(response.events.find(LLMEvent.is.stepFinish)?.providerMetadata).toBeUndefined()
     expect(response.events.find(LLMEvent.is.finish)?.providerMetadata).toBeUndefined()
+    expect(response.events.map((event) => event.type)).toEqual([
+      "step-start",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "step-finish",
+      "finish",
+    ])
   }),
 )
 

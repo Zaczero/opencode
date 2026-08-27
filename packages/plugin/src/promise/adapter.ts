@@ -330,7 +330,7 @@ export function fromPromise(plugin: Plugin) {
           event: {
             subscribe: (options) =>
               streams(
-                host.event.subscribe().pipe(
+                host.event.subscribe(options?.types).pipe(
                   Stream.mapEffect((event) => encodeEvent(event)),
                   Stream.map((event) => event as unknown as PromiseEvent),
                 ),

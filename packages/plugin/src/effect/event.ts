@@ -1,3 +1,6 @@
-import type { EventApi } from "@opencode-ai/client/effect/api"
+import type { OpenCodeEvent } from "@opencode-ai/client/effect"
+import type { Stream } from "effect"
 
-export interface EventDomain extends Pick<EventApi<unknown>, "subscribe"> {}
+export interface EventDomain {
+  readonly subscribe: (types?: readonly string[]) => Stream.Stream<OpenCodeEvent, unknown>
+}

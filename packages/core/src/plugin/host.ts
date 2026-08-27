@@ -246,15 +246,28 @@ export const make = Effect.fn("PluginHost.make")(function* (
       transform: commands.transform,
     },
     event: {
-      subscribe: () =>
-        bus
-          .subscribe()
-          .pipe(
-            Stream.filter(
-              (event): event is EventManifest.ServerEvent | RpcEvent =>
-                EventManifest.isServer(event) || isRpcEvent(event),
-            ),
-          ),
+      subscribe: (types?: readonly string[]) => {
+        const publicEvents = () =>
+          bus
+            .subscribe()
+            .pipe(
+              Stream.filter(
+                (event): event is EventManifest.ServerEvent | RpcEvent =>
+                  EventManifest.isServer(event) || isRpcEvent(event),
+              ),
+            )
+        if (!types?.length) return publicEvents()
+        const definitions = types.flatMap((type) => {
+          const definition = EventManifest.ServerDefinitions.find((definition) => definition.type === type)
+          return definition ? [definition] : []
+        })
+        if (types.length === 1) {
+          const definition = definitions[0]
+          if (definition) return bus.subscribe(definition)
+        }
+        const selected = new Set(types)
+        return publicEvents().pipe(Stream.filter((event) => selected.has(event.type)))
+      },
     },
     experimental: {
       terminal: {

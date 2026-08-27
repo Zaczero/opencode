@@ -87,6 +87,65 @@ it.effect("keys language models by package and flattened overlays", () =>
   }),
 )
 
+it.effect("invalidates cached AI SDK products when hooks change", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    let sdkLoads = 0
+    let languageLoads = 0
+    const sdk = yield* aisdk.hook.sdk((event) =>
+      Effect.sync(() => {
+        sdkLoads++
+        event.sdk = { languageModel: () => ({ sdk: sdkLoads }) }
+      }),
+    )
+    const language = yield* aisdk.hook.language((event) =>
+      Effect.sync(() => {
+        languageLoads++
+        event.language = { language: languageLoads } as unknown as LanguageModelV3
+      }),
+    )
+    const input = model("cache-lifecycle")
+    const first = yield* aisdk.language(input)
+    expect(yield* aisdk.language(input)).toBe(first)
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(1)
+
+    const languageReplacement = yield* aisdk.hook.language((event) =>
+      Effect.sync(() => {
+        languageLoads++
+        event.language = { language: languageLoads } as unknown as LanguageModelV3
+      }),
+    )
+    const afterLanguageChange = yield* aisdk.language(input)
+    expect(afterLanguageChange).not.toBe(first)
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(3)
+    yield* languageReplacement.dispose
+    const afterLanguageDispose = yield* aisdk.language(input)
+    expect(afterLanguageDispose).not.toBe(afterLanguageChange)
+    expect(sdkLoads).toBe(1)
+    expect(languageLoads).toBe(4)
+
+    const sdkReplacement = yield* aisdk.hook.sdk((event) =>
+      Effect.sync(() => {
+        sdkLoads++
+        event.sdk = { languageModel: () => ({ sdk: sdkLoads }) }
+      }),
+    )
+    const afterSDKChange = yield* aisdk.language(input)
+    expect(afterSDKChange).not.toBe(afterLanguageDispose)
+    expect(sdkLoads).toBe(3)
+    expect(languageLoads).toBe(5)
+    yield* sdkReplacement.dispose
+    const afterSDKDispose = yield* aisdk.language(input)
+    expect(afterSDKDispose).not.toBe(afterSDKChange)
+    expect(sdkLoads).toBe(4)
+    expect(languageLoads).toBe(6)
+    yield* language.dispose
+    yield* sdk.dispose
+  }),
+)
+
 it.effect("projects request settings, headers, and body overlays", () =>
   Effect.gen(function* () {
     const aisdk = yield* AISDK.Service

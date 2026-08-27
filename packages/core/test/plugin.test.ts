@@ -162,6 +162,45 @@ describe("Plugin", () => {
     }),
   )
 
+  it.effect("routes multiple selected public events through the tuple Bus delivery", () =>
+    Effect.gen(function* () {
+      const plugins = yield* Plugin.Service
+      const bus = yield* Bus.Service
+      let wildcardCalls = 0
+      const selectedCalls: string[][] = []
+      const observedBus = {
+        ...bus,
+        subscribe: ((input?: Event.Definition | readonly [Event.Definition, ...Event.Definition[]]) => {
+          if (input === undefined) {
+            wildcardCalls++
+            return bus.subscribe()
+          }
+          if (Array.isArray(input)) {
+            const definitions = input as readonly [Event.Definition, ...Event.Definition[]]
+            selectedCalls.push(definitions.map((definition) => definition.type))
+            return bus.subscribe(definitions)
+          }
+          return bus.subscribe(input as Event.Definition)
+        }) as Bus.Interface["subscribe"],
+      }
+      const host = yield* PluginHost.make(plugins).pipe(Effect.provideService(Bus.Service, observedBus))
+      const received = yield* host.event.subscribe(["agent.updated", "not-a-server-event", "config.updated"]).pipe(
+        Stream.take(2),
+        Stream.map((event) => event.type),
+        Stream.runCollect,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* Effect.yieldNow
+
+      yield* bus.publish(Agent.Event.Updated, {})
+      yield* bus.publish(ConfigSchema.Event.Updated, {})
+
+      expect(Array.from(yield* Fiber.join(received))).toEqual(["agent.updated", "config.updated"])
+      expect(wildcardCalls).toBe(0)
+      expect(selectedCalls).toEqual([["agent.updated", "config.updated"]])
+    }),
+  )
+
   it.effect("preserves public event selection, order, and location filtering", () =>
     Effect.gen(function* () {
       const plugins = yield* Plugin.Service

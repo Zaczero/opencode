@@ -2,6 +2,7 @@ import { Tool } from "@opencode-ai/schema/tool"
 import { Effect, Schema, SchemaAST, Stream } from "effect"
 import type { Scope } from "effect"
 import { HttpApiEndpoint, HttpApiSchema } from "effect/unstable/httpapi"
+import type { EventApi } from "@opencode-ai/client/promise"
 import { define } from "../effect/plugin.js"
 import type { Context, Plugin } from "./plugin.js"
 import type { Info } from "./tool.js"
@@ -9,6 +10,7 @@ import type { Info } from "./tool.js"
 type HostRegistration = { readonly dispose: Effect.Effect<void> }
 type Registration = { readonly dispose: () => Promise<void> }
 type PromiseEvent = ReturnType<Context["event"]["subscribe"]> extends AsyncIterable<infer Event> ? Event : never
+type EventSubscribeInput = Parameters<EventApi["subscribe"]>[0]
 
 interface CompiledEndpoint {
   readonly decode: ReadonlyArray<(input: unknown) => Effect.Effect<unknown, Schema.SchemaError>>
@@ -181,9 +183,9 @@ export function fromPromise(plugin: Plugin) {
             reload: () => run(host.command.reload()),
           },
           event: {
-            subscribe: (types) =>
+            subscribe: (input?: readonly string[] | EventSubscribeInput) =>
               Stream.toAsyncIterable(
-                host.event.subscribe(types).pipe(
+                host.event.subscribe(Array.isArray(input) ? input : undefined).pipe(
                   Stream.mapEffect((event) => encodeEvent(event)),
                   Stream.map((event) => event as unknown as PromiseEvent),
                 ),

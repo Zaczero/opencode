@@ -82,6 +82,28 @@ test("Promise event subscriptions receive all events by default", async () => {
   ])
 })
 
+test("Promise event subscriptions retain generated request options", async () => {
+  const host = createHost(Stream.fromIterable(makeEvents().slice(0, 1)))
+  const received: unknown[] = []
+
+  await Effect.runPromise(
+    Effect.scoped(
+      fromPromise(
+        define({
+          id: "promise-event-request-options",
+          setup: async (context) => {
+            for await (const event of context.event.subscribe({ signal: new AbortController().signal })) {
+              received.push(event)
+            }
+          },
+        }),
+      ).effect(host),
+    ),
+  )
+
+  expect(received.map((event) => (event as { readonly type: string }).type)).toEqual(["session.synthetic"])
+})
+
 function makeEvents() {
   return [
     SessionEvent.Synthetic.make({

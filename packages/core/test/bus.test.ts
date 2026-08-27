@@ -1,5 +1,19 @@
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Ref, Schema, Stream } from "effect"
+import {
+  Cause,
+  Context,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Ref,
+  Schema,
+  SchemaGetter,
+  Scope,
+  Stream,
+} from "effect"
 import { Bus } from "@opencode-ai/core/bus"
 import { Event } from "@opencode-ai/schema/event"
 import { Session } from "@opencode-ai/schema/session"
@@ -76,6 +90,13 @@ const CountMessage = Bus.ephemeral({
   },
 })
 
+const UnknownMessage = Bus.ephemeral({
+  type: "test.unknown",
+  schema: {
+    text: Schema.String,
+  },
+})
+
 const VersionedMessage = Bus.durable({
   type: "test.versioned",
   durable: {
@@ -94,6 +115,41 @@ const durableData = (sessionID: Session.ID, text: string) => ({
   title: text,
 })
 
+const makeCountingMessage = (type: string) => {
+  let encodeCount = 0
+  const counted = Schema.String.pipe(
+    Schema.decodeTo(Schema.Number, {
+      decode: SchemaGetter.transform((value) => Number(value)),
+      encode: SchemaGetter.transform((value) => {
+        encodeCount += 1
+        return String(value)
+      }),
+    }),
+  )
+  const definition = Bus.durable({
+    type,
+    durable: { version: 1, aggregate: "id" },
+    schema: { id: Schema.String, value: counted },
+  })
+  return { definition, encodeCount: () => encodeCount }
+}
+
+const EncodeFailureMessage = Bus.durable({
+  type: "test.encode-failure",
+  durable: { version: 1, aggregate: "id" },
+  schema: {
+    id: Schema.String,
+    value: Schema.Number.pipe(
+      Schema.decodeTo(Schema.Number, {
+        decode: SchemaGetter.transform((value) => value),
+        encode: SchemaGetter.transform(() => {
+          throw new Error("encode failed")
+        }),
+      }),
+    ),
+  },
+})
+
 /** Followed log read without markers: the old `durable` stream shape. */
 const tail = (bus: Bus.Interface, input: { aggregateID: string; after?: number }) =>
   bus.log({ ...input, follow: true }).pipe(Stream.filter((item): item is Event.Payload => !Bus.isSynced(item)))
@@ -107,7 +163,9 @@ const it = testEffect(
 const itWithoutLocation = testEffect(
   AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node]), [[Bus.node, Bus.configured({ persist: true })]]),
 )
-const itWithoutPersistence = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node])))
+const itWithoutPersistence = testEffect(
+  AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node]), [[Bus.node, Bus.configured({ persist: false })]]),
+)
 
 describe("Bus", () => {
   it.effect("subscribes to multiple event definitions with a discriminated payload union", () =>
@@ -127,6 +185,104 @@ describe("Bus", () => {
         event.type === "test.message" ? event.data.text : event.data.count,
       )
       expect(received).toEqual(["hello", 2])
+    }),
+  )
+
+  it.effect("preserves publication order while a multi-definition consumer is delayed", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const received = new Array<string>()
+      const firstReceived = yield* Deferred.make<void>()
+      const releaseFirst = yield* Deferred.make<void>()
+      const fiber = yield* bus.subscribe([Message, CountMessage]).pipe(
+        Stream.take(4),
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            received.push(event.type)
+            if (received.length !== 1) return
+            yield* Deferred.succeed(firstReceived, undefined)
+            yield* Deferred.await(releaseFirst)
+          }),
+        ),
+        Effect.forkScoped,
+      )
+      yield* Effect.yieldNow
+
+      yield* bus.publish(Message, { text: "first" })
+      yield* Deferred.await(firstReceived)
+      yield* bus.publish(GlobalMessage, { text: "unrelated" }, { global: true })
+      yield* bus.publish(CountMessage, { count: 2 })
+      yield* bus.publish(Message, { text: "third" })
+      yield* bus.publish(GlobalMessage, { text: "unrelated again" }, { global: true })
+      yield* bus.publish(CountMessage, { count: 4 })
+
+      expect(received).toEqual([Message.type])
+      yield* Deferred.succeed(releaseFirst, undefined)
+      yield* Fiber.join(fiber)
+      expect(received).toEqual([Message.type, CountMessage.type, Message.type, CountMessage.type])
+    }),
+  )
+
+  it.effect("isolates multi-definition subscriptions by location while retaining global events", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const fiber = yield* bus
+        .subscribe([Message, GlobalMessage])
+        .pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      const local = yield* bus.publish(Message, { text: "local" })
+      yield* bus.publish(
+        Message,
+        { text: "other" },
+        { location: { directory: AbsolutePath.make("other"), workspaceID: Workspace.ID.make("wrk_other") } },
+      )
+      const global = yield* bus.publish(GlobalMessage, { text: "global" }, { global: true })
+
+      expect(Array.from(yield* Fiber.join(fiber))).toEqual([local, global])
+    }),
+  )
+
+  it.effect("keeps unknown multi-definition selections pending and delivers known events", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const completed = yield* Deferred.make<void>()
+      const mixed = yield* bus
+        .subscribe([Message, UnknownMessage])
+        .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      const unknown = yield* bus.subscribe([UnknownMessage]).pipe(
+        Stream.runForEach(() => Effect.void),
+        Effect.onExit(() => Deferred.succeed(completed, undefined).pipe(Effect.asVoid)),
+        Effect.forkScoped,
+      )
+      yield* Effect.yieldNow
+
+      yield* bus.publish(CountMessage, { count: 0 })
+      const event = yield* bus.publish(Message, { text: "known" })
+
+      expect(Array.from(yield* Fiber.join(mixed))).toEqual([event])
+      expect(yield* Deferred.isDone(completed)).toBe(false)
+      yield* Fiber.interrupt(unknown)
+      expect(yield* Deferred.isDone(completed)).toBe(true)
+    }),
+  )
+
+  it.effect("cleans up repeated multi-definition subscription scopes", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      for (let index = 0; index < 8; index++) {
+        const fiber = yield* bus.subscribe([Message, CountMessage]).pipe(Stream.runCollect, Effect.forkScoped)
+        yield* Effect.yieldNow
+        yield* Fiber.interrupt(fiber)
+      }
+
+      const fiber = yield* bus
+        .subscribe([Message, CountMessage])
+        .pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+      const event = yield* bus.publish(Message, { text: "after cleanup" })
+
+      expect(Array.from(yield* Fiber.join(fiber))).toEqual([event])
     }),
   )
 
@@ -207,13 +363,71 @@ describe("Bus", () => {
   it.effect("publishes to typed and wildcard subscriptions", () =>
     Effect.gen(function* () {
       const bus = yield* Bus.Service
-      const typed = yield* bus.subscribe(Message).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
-      const wildcard = yield* bus.subscribe().pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      const order = new Array<string>()
+      const typedEvents = new Array<Event.Payload>()
+      const wildcardEvents = new Array<Event.Payload>()
+      const typed = yield* bus.subscribe(Message).pipe(
+        Stream.take(1),
+        Stream.runForEach((received) =>
+          Effect.sync(() => {
+            order.push("typed")
+            typedEvents.push(received)
+          }),
+        ),
+        Effect.forkScoped,
+      )
+      const wildcard = yield* bus.subscribe().pipe(
+        Stream.take(1),
+        Stream.runForEach((received) =>
+          Effect.sync(() => {
+            order.push("wildcard")
+            wildcardEvents.push(received)
+          }),
+        ),
+        Effect.forkScoped,
+      )
       yield* Effect.yieldNow
       const event = yield* bus.publish(Message, { text: "hello" })
 
-      expect(Array.from(yield* Fiber.join(typed))).toEqual([event])
-      expect(Array.from(yield* Fiber.join(wildcard))).toEqual([event])
+      yield* Fiber.join(typed)
+      yield* Fiber.join(wildcard)
+      expect(typedEvents).toEqual([event])
+      expect(wildcardEvents).toEqual([event])
+      expect(order).toEqual(["typed", "wildcard"])
+    }),
+  )
+
+  it.effect("completes subscriptions when the Bus scope shuts down", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* Layer.buildWithScope(
+        AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node]), [[Bus.node, Bus.configured()]]),
+        scope,
+      )
+      const bus = Context.get(context, Bus.Service)
+      const fiber = yield* bus.subscribe(Message).pipe(Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      yield* Scope.close(scope, Exit.void)
+      expect(yield* Fiber.join(fiber)).toEqual([])
+    }),
+  )
+
+  it.effect("completes multi-definition subscriptions when the Bus scope shuts down", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* Layer.buildWithScope(
+        AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node]), [[Bus.node, Bus.configured()]]),
+        scope,
+      )
+      const bus = Context.get(context, Bus.Service)
+      const fiber = yield* bus.subscribe([Message, CountMessage]).pipe(Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      yield* Scope.close(scope, Exit.void)
+      expect(yield* Fiber.join(fiber)).toEqual([])
     }),
   )
 
@@ -297,6 +511,94 @@ describe("Bus", () => {
     }),
   )
 
+  itWithoutPersistence.effect("does not encode unpersisted durable events", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const message = makeCountingMessage("test.counting.unpersisted")
+      const aggregateID = Event.ID.create()
+      const observed = new Array<string>()
+      yield* bus.project(message.definition, () => Effect.sync(() => observed.push("project")))
+      yield* bus.listen((event) =>
+        event.type === message.definition.type ? Effect.sync(() => observed.push("notify")) : Effect.void,
+      )
+
+      yield* bus.publish(message.definition, { id: aggregateID, value: 1 })
+      yield* bus.publishAll([
+        [message.definition, { id: aggregateID, value: 2 }],
+        [message.definition, { id: aggregateID, value: 3 }],
+      ])
+
+      expect(message.encodeCount()).toBe(0)
+      expect(observed).toEqual(["project", "notify", "project", "project", "notify", "notify"])
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+    }),
+  )
+
+  it.effect("encodes each persisted durable event once and retains encoded data", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const message = makeCountingMessage("test.counting.persisted")
+      const aggregateID = Event.ID.create()
+
+      yield* bus.publish(message.definition, { id: aggregateID, value: 1 })
+      yield* bus.publishAll([
+        [message.definition, { id: aggregateID, value: 2 }],
+        [message.definition, { id: aggregateID, value: 3 }],
+      ])
+
+      expect(message.encodeCount()).toBe(3)
+      expect(
+        (yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).map(
+          (row) => row.data,
+        ),
+      ).toEqual([
+        { id: aggregateID, value: "1" },
+        { id: aggregateID, value: "2" },
+        { id: aggregateID, value: "3" },
+      ])
+    }),
+  )
+
+  it.effect("rolls back a persisted durable event when encoding fails", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Event.ID.create()
+      const observed = new Array<string>()
+      yield* bus.project(EncodeFailureMessage, () => Effect.sync(() => observed.push("project")))
+      yield* bus.listen((event) =>
+        event.type === EncodeFailureMessage.type ? Effect.sync(() => observed.push("notify")) : Effect.void,
+      )
+
+      const exit = yield* bus.publish(EncodeFailureMessage, { id: aggregateID, value: 1 }).pipe(Effect.exit)
+
+      expect(String(exit)).toContain("encode failed")
+      expect(observed).toEqual([])
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+      expect(
+        yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).all(),
+      ).toEqual([])
+    }),
+  )
+
+  it.effect("rolls back a persisted durable event with malformed data", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Event.ID.create()
+
+      const exit = yield* bus.publish(SyncMessage, { id: aggregateID, text: 42 as unknown as string }).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBeTrue()
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+      expect(
+        yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).all(),
+      ).toEqual([])
+    }),
+  )
+
   it.effect("rejects local commit hooks on live-only events", () =>
     Effect.gen(function* () {
       const bus = yield* Bus.Service
@@ -352,18 +654,49 @@ describe("Bus", () => {
     }),
   )
 
+  it.effect("gates selected listeners before constructing them and preserves registration order", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const received = new Array<string>()
+      yield* bus.listen(
+        () => Effect.sync(() => received.push("filtered")),
+        { types: new Set([SyncMessage.type]) },
+      )
+      yield* bus.listen((event) => Effect.sync(() => received.push(`wildcard:${event.type}`)))
+
+      yield* bus.publish(Message, { text: "unrelated" })
+      expect(received).toEqual(["wildcard:test.message"])
+
+      yield* bus.publish(SyncMessage, { id: "one", text: "selected" })
+      expect(received).toEqual(["wildcard:test.message", "filtered", "wildcard:test.sync"])
+    }),
+  )
+
+  it.effect("unsubscribes selected listeners", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const received = new Array<string>()
+      const unsubscribe = yield* bus.listen(
+        () => Effect.sync(() => received.push("filtered")),
+        { types: new Set([SyncMessage.type]) },
+      )
+
+      yield* unsubscribe
+      yield* bus.publish(SyncMessage, { id: "one", text: "after unsubscribe" })
+
+      expect(received).toEqual([])
+    }),
+  )
+
   it.effect("isolates observer defects after durable events commit", () =>
     Effect.gen(function* () {
       const bus = yield* Bus.Service
       const received = new Array<string>()
+      const types = { types: new Set([SyncMessage.type]) }
       yield* bus.listen(() => {
         throw new Error("listener defect")
-      })
-      yield* bus.listen((event) =>
-        Effect.sync(() => {
-          received.push(event.type)
-        }),
-      )
+      }, types)
+      yield* bus.listen((event) => Effect.sync(() => received.push(event.type)), types)
 
       const event = yield* bus.publish(SyncMessage, { id: "one", text: "hello" })
 
@@ -408,7 +741,7 @@ describe("Bus", () => {
     Effect.gen(function* () {
       const bus = yield* Bus.Service
       const { db } = yield* Database.Service
-      yield* bus.listen(() => Effect.interrupt)
+      yield* bus.listen(() => Effect.interrupt, { types: new Set([SyncMessage.type]) })
 
       const exit = yield* bus.publish(SyncMessage, { id: "interrupted", text: "hello" }).pipe(Effect.exit)
       const committed = yield* db
@@ -427,9 +760,27 @@ describe("Bus", () => {
     Effect.gen(function* () {
       const bus = yield* Bus.Service
       const defect = new Error("listener defect")
-      yield* bus.listen(() => Effect.die(defect))
+      yield* bus.listen(() => Effect.die(defect), { types: new Set([Message.type]) })
 
       expect(yield* bus.publish(Message, { text: "hello" }).pipe(Effect.catchDefect(Effect.succeed))).toBe(defect)
+    }),
+  )
+
+  itWithoutPersistence.effect("passes recognized malformed session types to listener validation", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const validation = new Array<boolean>()
+      yield* bus.listen(
+        (event) =>
+          Effect.sync(() => {
+            validation.push(Schema.is(SessionEvent.Durable)(event))
+          }),
+        { types: new Set([SessionEvent.Renamed.type]) },
+      )
+
+      yield* bus.publish(SessionEvent.Renamed, { sessionID: Session.ID.create(), title: 42 as unknown as string })
+
+      expect(validation).toEqual([false])
     }),
   )
 

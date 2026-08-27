@@ -1,6 +1,6 @@
 export * as Bus from "./bus.js"
 
-import { Cause, Clock, Context, Effect, Layer, Option, PubSub, Schema, Stream } from "effect"
+import { Cause, Clock, Context, Effect, Layer, Option, PubSub, Queue, Schema, Stream } from "effect"
 import { Event } from "@opencode-ai/schema/event"
 import type { EventLog } from "@opencode-ai/schema/event-log"
 import { and, asc, eq, gt, lte, sql } from "drizzle-orm"
@@ -17,6 +17,10 @@ import { AbsolutePath } from "@opencode-ai/schema/schema"
 
 export type Subscriber<D extends Event.Definition = Event.Definition> = (event: Event.Payload<D>) => Effect.Effect<void>
 export type Unsubscribe = Effect.Effect<void>
+
+export interface ListenOptions {
+  readonly types?: ReadonlySet<Event.Definition["type"]>
+}
 
 export const latestSequence = Effect.fn("Bus.latestSequence")(function* (
   db: Database.Interface["db"],
@@ -159,7 +163,7 @@ export interface Interface {
     readonly follow?: boolean
   }) => Stream.Stream<LogItem>
   /** @deprecated Use `subscribe()` and consume the returned stream. */
-  readonly listen: (listener: Subscriber) => Effect.Effect<Unsubscribe>
+  readonly listen: (listener: Subscriber, options?: ListenOptions) => Effect.Effect<Unsubscribe>
   readonly project: <D extends Event.Definition>(definition: D, projector: Subscriber<D>) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
@@ -194,9 +198,11 @@ export function configured(options?: Options) {
           live: yield* PubSub.unbounded<Event.Payload>(),
           durable: new Map<string, Set<PubSub.PubSub<void>>>(),
           typed: new Map<string, PubSub.PubSub<Event.Payload>>(),
+          selected: new Map<string, Set<Queue.Queue<Event.Payload, Cause.Done<void>>>>(),
+          selectedSubscriptions: new Set<Queue.Queue<Event.Payload, Cause.Done<void>>>(),
         }
         const projectors = new Map<string, Subscriber[]>()
-        const listeners = new Array<Subscriber>()
+        const listeners = new Array<{ readonly listener: Subscriber; readonly types?: ReadonlySet<string> }>()
         const durableLocks = KeyedMutex.makeUnsafe<string>()
         const { db } = yield* Database.Service
         const logReadPageSize = options?.logReadPageSize ?? 512
@@ -278,6 +284,7 @@ export function configured(options?: Options) {
               { discard: true },
             )
             yield* Effect.forEach(pubsub.typed.values(), PubSub.shutdown, { discard: true })
+            yield* Effect.forEach(pubsub.selectedSubscriptions, Queue.end, { discard: true })
           }),
         )
 
@@ -326,10 +333,14 @@ export function configured(options?: Options) {
                               .get()
                               .pipe(Effect.orDie)
                             const latest = row?.seq ?? -1
-                            const encoded = Schema.encodeUnknownSync(definition.data)(event.data) as Record<
-                              string,
-                              unknown
-                            >
+                            const encoded = persist
+                              ? {
+                                  data: Schema.encodeUnknownSync(definition.data)(event.data) as Record<
+                                    string,
+                                    unknown
+                                  >,
+                                }
+                              : undefined
                             if (input?.strictOwner && row?.ownerID && row.ownerID !== input.ownerID) {
                               yield* Effect.die(
                                 new InvalidDurableEventError({
@@ -339,7 +350,7 @@ export function configured(options?: Options) {
                               )
                             }
                             if (input && input.seq <= latest) {
-                              if (!persist) return
+                              if (!encoded) return
                               const stored = yield* db
                                 .select()
                                 .from(EventTable)
@@ -350,7 +361,7 @@ export function configured(options?: Options) {
                                 stored?.id === event.id &&
                                 stored.type === versionedType(definition.type, durable.version) &&
                                 stored.created === (event.created ?? 0) &&
-                                isDeepStrictEqual(stored.data, encoded)
+                                isDeepStrictEqual(stored.data, encoded.data)
                               ) {
                                 if (input.ownerID && row?.ownerID == null) {
                                   yield* db
@@ -417,7 +428,7 @@ export function configured(options?: Options) {
                               })
                               .run()
                               .pipe(Effect.orDie)
-                            if (persist)
+                            if (encoded)
                               yield* db
                                 .insert(EventTable)
                                 .values([
@@ -427,7 +438,7 @@ export function configured(options?: Options) {
                                     seq,
                                     created: event.created ?? 0,
                                     type: versionedType(definition.type, durable.version),
-                                    data: encoded,
+                                    data: encoded.data,
                                   },
                                 ])
                                 .run()
@@ -501,12 +512,16 @@ export function configured(options?: Options) {
           return Effect.gen(function* () {
             yield* Effect.forEach(
               listeners,
-              (listener) => (isolateListeners ? observe(event, listener) : listener(event)),
+              (entry) => {
+                if (entry.types && !entry.types.has(event.type)) return Effect.void
+                return isolateListeners ? observe(event, entry.listener) : entry.listener(event)
+              },
               { discard: true },
             )
             const typed = pubsub.typed.get(event.type)
-            if (typed) yield* PubSub.publish(typed, event)
-            yield* PubSub.publish(pubsub.live, event)
+            if (typed) PubSub.publishUnsafe(typed, event)
+            for (const queue of pubsub.selected.get(event.type) ?? []) Queue.offerUnsafe(queue, event)
+            PubSub.publishUnsafe(pubsub.live, event)
           })
         }
 
@@ -602,10 +617,14 @@ export function configured(options?: Options) {
                           const ids = new Set<Event.ID>()
                           for (const [index, item] of payloads.entries()) {
                             const seq = firstSeq + index
-                            const encoded = Schema.encodeUnknownSync(item.definition.data)(item.event.data) as Record<
-                              string,
-                              unknown
-                            >
+                            const encoded = persist
+                              ? {
+                                  data: Schema.encodeUnknownSync(item.definition.data)(item.event.data) as Record<
+                                    string,
+                                    unknown
+                                  >,
+                                }
+                              : undefined
                             if (persist) {
                               if (ids.has(item.event.id))
                                 yield* Effect.die(
@@ -636,14 +655,14 @@ export function configured(options?: Options) {
                               yield* projector(event)
                             }
                             if (item.commit) yield* item.commit(seq)
-                            if (persist)
+                            if (encoded)
                               rows.push({
                                 id: event.id,
                                 aggregate_id: aggregateID,
                                 seq,
                                 created: event.created,
                                 type: versionedType(item.definition.type, item.definition.durable.version),
-                                data: encoded,
+                                data: encoded.data,
                               })
                           }
                           yield* db
@@ -762,7 +781,35 @@ export function configured(options?: Options) {
             return local(Stream.unwrap(getOrCreate(input).pipe(Effect.map((pubsub) => Stream.fromPubSub(pubsub)))))
           }
           const types = new Set(input.map((definition) => definition.type))
-          return streamLive().pipe(Stream.filter((event) => types.has(event.type)))
+          return local(
+            Stream.unwrap(
+              Effect.acquireRelease(
+                Queue.unbounded<Event.Payload, Cause.Done<void>>().pipe(
+                  Effect.tap((queue) =>
+                    Effect.sync(() => {
+                      pubsub.selectedSubscriptions.add(queue)
+                      for (const type of types) {
+                        const queues =
+                          pubsub.selected.get(type) ?? new Set<Queue.Queue<Event.Payload, Cause.Done<void>>>()
+                        queues.add(queue)
+                        pubsub.selected.set(type, queues)
+                      }
+                    }),
+                  ),
+                ),
+                (queue) =>
+                  Effect.sync(() => {
+                    pubsub.selectedSubscriptions.delete(queue)
+                    for (const type of types) {
+                      const queues = pubsub.selected.get(type)
+                      if (!queues) continue
+                      queues.delete(queue)
+                      if (queues.size === 0) pubsub.selected.delete(type)
+                    }
+                  }).pipe(Effect.andThen(Queue.shutdown(queue))),
+              ).pipe(Effect.map(Stream.fromQueue)),
+            ),
+          )
         }
 
         const streamLive = (): Stream.Stream<Event.Payload> => local(Stream.fromPubSub(pubsub.live))
@@ -880,11 +927,12 @@ export function configured(options?: Options) {
             }),
           )
 
-        const listen = (listener: Subscriber): Effect.Effect<Unsubscribe> =>
+        const listen = (listener: Subscriber, options?: ListenOptions): Effect.Effect<Unsubscribe> =>
           Effect.sync(() => {
-            listeners.push(listener)
+            const entry = { listener, types: options?.types }
+            listeners.push(entry)
             return Effect.sync(() => {
-              const index = listeners.indexOf(listener)
+              const index = listeners.indexOf(entry)
               if (index >= 0) listeners.splice(index, 1)
             })
           })

@@ -181,9 +181,9 @@ export function fromPromise(plugin: Plugin) {
             reload: () => run(host.command.reload()),
           },
           event: {
-            subscribe: () =>
+            subscribe: (types) =>
               Stream.toAsyncIterable(
-                host.event.subscribe().pipe(
+                host.event.subscribe(types).pipe(
                   Stream.mapEffect((event) => encodeEvent(event)),
                   Stream.map((event) => event as unknown as PromiseEvent),
                 ),

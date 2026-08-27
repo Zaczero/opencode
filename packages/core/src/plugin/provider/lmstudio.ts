@@ -138,7 +138,7 @@ export function make(origin = "http://127.0.0.1:1234", interval: Duration.Input 
         yield* ctx.catalog.reload()
         yield* refresh().pipe(Effect.ignore)
       })
-      yield* ctx.event.subscribe().pipe(
+      yield* ctx.event.subscribe(["config.updated"]).pipe(
         Stream.filter((event) => event.type === "config.updated"),
         Stream.runForEach(reload),
         Effect.forkScoped({ startImmediately: true }),

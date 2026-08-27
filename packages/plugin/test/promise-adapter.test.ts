@@ -1,31 +1,28 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test"
+import { Config } from "@opencode-ai/schema/config"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
-import { Effect, Schema, Stream } from "effect"
 import { OpenCodeEvent } from "@opencode-ai/protocol/groups/event"
+import { Effect, Schema, SchemaAST, Stream } from "effect"
 import type { Context } from "../src/effect/plugin.js"
 import { fromPromise } from "../src/promise/adapter.js"
 import { define } from "../src/promise/plugin.js"
 
 afterEach(() => mock.restore())
 
-test("Promise event subscriptions encode once and preserve stream order", async () => {
-  const first = SessionEvent.Synthetic.make({
-    id: "evt_first",
-    created: 1,
-    type: "session.synthetic",
-    durable: { aggregateID: "ses_1", seq: 1, version: 1 },
-    data: { sessionID: "ses_1", text: "first", description: undefined, metadata: undefined },
-  })
-  const second = SessionEvent.Synthetic.make({
-    id: "evt_second",
-    created: 2,
-    type: "session.synthetic",
-    durable: { aggregateID: "ses_1", seq: 2, version: 1 },
-    data: { sessionID: "ses_1", text: "second", description: undefined, metadata: undefined },
-  })
-  const events = [first, second]
+test("Promise event subscriptions filter before encoding and preserve stream order", async () => {
+  const events = makeEvents()
   const host = createHost(Stream.fromIterable(events))
-  const encoded = spyOn(Schema, "encodeUnknownEffect")
+  const originalEncode = Schema.encodeUnknownEffect
+  let eventEncodes = 0
+  const encoded = spyOn(Schema, "encodeUnknownEffect").mockImplementation(
+    <S extends Schema.Constraint>(schema: S, options?: SchemaAST.ParseOptions) => {
+      const encode = originalEncode(schema, options)
+      return (input: unknown, parseOptions?: SchemaAST.ParseOptions) => {
+        if (Object.is(schema, OpenCodeEvent)) eventEncodes++
+        return encode(input, parseOptions)
+      }
+    },
+  )
   const received: unknown[] = []
 
   await Effect.runPromise(
@@ -34,7 +31,7 @@ test("Promise event subscriptions encode once and preserve stream order", async 
         define({
           id: "promise-event-encoding",
           setup: async (context) => {
-            for await (const event of context.event.subscribe()) received.push(event)
+            for await (const event of context.event.subscribe(["session.synthetic"])) received.push(event)
           },
         }),
       ).effect(host),
@@ -51,14 +48,64 @@ test("Promise event subscriptions encode once and preserve stream order", async 
     },
     {
       id: "evt_second",
-      created: 2,
+      created: 3,
       type: "session.synthetic",
       durable: { aggregateID: "ses_1", seq: 2, version: 1 },
       data: { sessionID: "ses_1", text: "second" },
     },
   ])
+  expect(eventEncodes).toBe(2)
   expect(encoded.mock.calls.filter(([schema]) => schema === OpenCodeEvent)).toHaveLength(1)
 })
+
+test("Promise event subscriptions receive all events by default", async () => {
+  const events = makeEvents()
+  const host = createHost(Stream.fromIterable(events.slice(0, 2)))
+  const received: unknown[] = []
+
+  await Effect.runPromise(
+    Effect.scoped(
+      fromPromise(
+        define({
+          id: "promise-event-unfiltered",
+          setup: async (context) => {
+            for await (const event of context.event.subscribe()) received.push(event)
+          },
+        }),
+      ).effect(host),
+    ),
+  )
+
+  expect(received.map((event) => (event as { readonly type: string }).type)).toEqual([
+    "session.synthetic",
+    "config.updated",
+  ])
+})
+
+function makeEvents() {
+  return [
+    SessionEvent.Synthetic.make({
+      id: "evt_first",
+      created: 1,
+      type: "session.synthetic",
+      durable: { aggregateID: "ses_1", seq: 1, version: 1 },
+      data: { sessionID: "ses_1", text: "first", description: undefined, metadata: undefined },
+    }),
+    Config.Event.Updated.make({
+      id: "evt_foreign",
+      created: 2,
+      type: "config.updated",
+      data: {},
+    }),
+    SessionEvent.Synthetic.make({
+      id: "evt_second",
+      created: 3,
+      type: "session.synthetic",
+      durable: { aggregateID: "ses_1", seq: 2, version: 1 },
+      data: { sessionID: "ses_1", text: "second", description: undefined, metadata: undefined },
+    }),
+  ] as const
+}
 
 function createHost(events: ReturnType<Context["event"]["subscribe"]>) {
   const unused = (..._args: never[]) => Effect.die("unused")
@@ -74,7 +121,13 @@ function createHost(events: ReturnType<Context["event"]["subscribe"]>) {
       reload: unused,
     },
     command: { list: unused, transform: unused, reload: unused },
-    event: { subscribe: () => events },
+    event: {
+      subscribe: (types) => {
+        if (!types?.length) return events
+        const selected = new Set(types)
+        return events.pipe(Stream.filter((event) => selected.has(event.type)))
+      },
+    },
     generate: { text: unused },
     integration: {
       list: unused,

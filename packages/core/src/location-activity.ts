@@ -8,6 +8,7 @@ import { SessionEvent } from "./session/event.js"
 import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
 
 const isSessionEvent = Schema.is(SessionEvent.Durable)
+const SESSION_EVENT_TYPES = new Set(SessionEvent.DurableDefinitions.map((definition) => definition.type))
 
 export class Service extends Context.Service<Service, {}>()("@opencode/LocationActivity") {}
 
@@ -26,14 +27,17 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
           entries.set(key(ref), { ref, expiresAt: clock.currentTimeMillisUnsafe() + timeToLive })
         })
 
-      const unsubscribe = yield* bus.listen((event) => {
-        if (!isSessionEvent(event)) return Effect.void
-        const location = event.location
-        if (!location) return Effect.void
-        return RcMap.has(locations.rcMap, location).pipe(
-          Effect.flatMap((active) => (active ? touch(location) : Effect.void)),
-        )
-      })
+      const unsubscribe = yield* bus.listen(
+        (event) => {
+          if (!isSessionEvent(event)) return Effect.void
+          const location = event.location
+          if (!location) return Effect.void
+          return RcMap.has(locations.rcMap, location).pipe(
+            Effect.flatMap((active) => (active ? touch(location) : Effect.void)),
+          )
+        },
+        { types: SESSION_EVENT_TYPES },
+      )
       yield* Effect.addFinalizer(() => unsubscribe)
       yield* Effect.gen(function* () {
         yield* Effect.sleep(options.sweepInterval ?? "1 minute")

@@ -191,7 +191,21 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Interface, p
       transform: commands.transform,
     },
     event: {
-      subscribe: () => bus.subscribe().pipe(Stream.filter(EventManifest.isServer)),
+      subscribe: (types?: readonly string[]) => {
+        if (!types?.length) return bus.subscribe().pipe(Stream.filter(EventManifest.isServer))
+        const definitions = types.flatMap((type) => {
+          const definition = EventManifest.ServerDefinitions.find((definition) => definition.type === type)
+          return definition ? [definition] : []
+        })
+        if (types.length === 1) {
+          const definition = definitions[0]
+          if (definition) return bus.subscribe(definition)
+        }
+        const selected = new Set<string>(definitions.map((definition) => definition.type))
+        return bus.subscribe().pipe(
+          Stream.filter((event): event is EventManifest.ServerEvent => selected.has(event.type)),
+        )
+      },
     },
     generate: {
       text: (input) => generate.text(input).pipe(Effect.map((text) => ({ text }))),

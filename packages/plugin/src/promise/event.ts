@@ -1,3 +1,5 @@
-import type { EventApi } from "@opencode-ai/client/promise/api"
+import type { OpenCodeEvent } from "@opencode-ai/client/promise"
 
-export interface EventDomain extends Pick<EventApi, "subscribe"> {}
+export interface EventDomain {
+  readonly subscribe: (types?: readonly string[]) => AsyncIterable<OpenCodeEvent>
+}

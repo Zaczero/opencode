@@ -8,7 +8,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http"
 import { HttpContext, HttpRateLimitDetails, AIError, TransportError } from "../schema/index.js"
-import { classifyProviderFailure } from "../provider-error.js"
+import { classifyProviderFailure, decodeProviderError } from "../provider-error.js"
 
 export interface Interface {
   readonly execute: (
@@ -97,26 +97,12 @@ export const responseHttp = (response: HttpClientResponse.HttpClientResponse) =>
     headers: headerDetails(response.headers),
   })
 
-const decodeProviderBody = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      message: Schema.optionalKey(Schema.String),
-      detail: Schema.optionalKey(Schema.String),
-      error: Schema.optionalKey(
-        Schema.Struct({
-          message: Schema.optionalKey(Schema.String),
-          detail: Schema.optionalKey(Schema.String),
-        }),
-      ),
-    }),
-  ),
-)
-
 const providerMessage = (status: number, body: string | void) => {
-  const decoded = body === undefined ? undefined : Option.getOrUndefined(decodeProviderBody(body))
+  const decoded = body === undefined ? undefined : Option.getOrUndefined(decodeProviderError(body))
   return (
-    [decoded?.error?.message, decoded?.error?.detail, decoded?.message, decoded?.detail].find((message) => message?.trim()) ??
-    `Provider request failed with HTTP ${status}`
+    [decoded?.error?.message, decoded?.error?.detail, decoded?.message, decoded?.detail].find(
+      (message): message is string => typeof message === "string" && message.trim() !== "",
+    ) ?? `Provider request failed with HTTP ${status}`
   )
 }
 

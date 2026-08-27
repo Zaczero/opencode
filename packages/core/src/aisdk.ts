@@ -32,6 +32,7 @@ import {
 } from "@opencode-ai/ai"
 import { Auth, Endpoint, RequestExecutor, type AnyRoute } from "@opencode-ai/ai/route"
 import { ProviderShared } from "@opencode-ai/ai/protocols/shared"
+import { decodeProviderError } from "@opencode-ai/ai/provider-error"
 import { Cause, Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { makeParser } from "effect/unstable/encoding/Sse"
 import type { ID, Info } from "./model.js"
@@ -854,19 +855,6 @@ function errorBody(value: unknown) {
   return ProviderShared.encodeJson(value)
 }
 
-const ProviderErrorDetail = Schema.Struct({
-  message: Schema.optionalKey(Schema.String),
-  code: Schema.optionalKey(Schema.Union([Schema.String, Schema.Finite])),
-  detail: Schema.optionalKey(Schema.String),
-})
-const ProviderErrorBody = Schema.Struct({
-  ...ProviderErrorDetail.fields,
-  error: Schema.optionalKey(ProviderErrorDetail),
-})
-const decodeProviderError = Schema.decodeUnknownOption(
-  Schema.Union([ProviderErrorBody, Schema.fromJsonString(ProviderErrorBody)]),
-)
-
 function unknownErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   return message.trim() === "" ? "Provider request failed" : message
@@ -878,7 +866,7 @@ function providerErrorMessage(error: APICallError) {
   const details = [data?.error, data, body?.error, body]
   const message = details
     .flatMap((detail) => [detail?.message, detail?.detail])
-    .find((value) => value?.trim())
+    .find((value): value is string => typeof value === "string" && value.trim() !== "")
   const value = details.map((detail) => detail?.code).find((value) => value !== undefined)
   const code = value === undefined ? undefined : String(value)
   const prefix =

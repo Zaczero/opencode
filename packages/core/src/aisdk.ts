@@ -209,15 +209,18 @@ export const locationLayer = Layer.effect(
     const register = <Event>(
       hooks: () => ((event: Event) => Effect.Effect<void> | void)[],
       update: (hooks: ((event: Event) => Effect.Effect<void> | void)[]) => void,
+      changed: () => void,
     ) =>
       Effect.fn("AISDK.hook")(function* (callback: (event: Event) => Effect.Effect<void> | void) {
         const scope = yield* Scope.Scope
         let active = true
         update([...hooks(), callback])
+        changed()
         const dispose = Effect.sync(() => {
           if (!active) return
           active = false
           update(hooks().filter((item) => item !== callback))
+          changed()
         })
         yield* Scope.addFinalizer(scope, dispose)
         return { dispose }
@@ -239,10 +242,15 @@ export const locationLayer = Layer.effect(
         sdk: register(
           () => sdkHooks,
           (next) => (sdkHooks = next),
+          () => {
+            sdks.clear()
+            languages.clear()
+          },
         ),
         language: register(
           () => languageHooks,
           (next) => (languageHooks = next),
+          () => languages.clear(),
         ),
       },
       runSDK: (event) => run(sdkHooks, event),

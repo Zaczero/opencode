@@ -94,7 +94,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           database: {
             path:
               process.env.OPENCODE_DB ??
-              (["latest", "dev", "beta", "next", "prod"].includes(OPENCODE_CHANNEL) ||
+              (["latest", "dev", "beta", "next", "prod", "fork"].includes(OPENCODE_CHANNEL) ||
               process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
               process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
                 ? "opencode.db"

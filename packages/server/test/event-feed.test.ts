@@ -44,6 +44,23 @@ describe("EventFeed", () => {
     expect(EventFeed.frame(payload)).toBe(`data: ${JSON.stringify(payload)}\n\n`)
   })
 
+  it.effect("discards public events before encoding when no clients are connected", () =>
+    Effect.gen(function* () {
+      let encodes = 0
+      const source = makeSource()
+      const feed = yield* EventFeed.make(source.observe, {
+        encode: (event) => {
+          encodes += 1
+          return event.type
+        },
+      })
+
+      yield* source.publish(event("discarded"))
+
+      expect(encodes).toBe(0)
+    }),
+  )
+
   it.effect("encodes once and delivers the same frame to every subscriber", () =>
     Effect.gen(function* () {
       let encodes = 0
@@ -136,15 +153,42 @@ describe("EventFeed", () => {
 
   it.effect("filters internal events before they consume subscriber capacity", () =>
     Effect.gen(function* () {
+      let encodes = 0
       const source = makeSource()
-      const feed = yield* EventFeed.make(source.observe, { capacity: 1, encode: (event) => event.type })
+      const feed = yield* EventFeed.make(source.observe, {
+        capacity: 1,
+        encode: (event) => {
+          encodes += 1
+          return event.type
+        },
+      })
       const stream = yield* feed.subscribe
 
       yield* source.publish(internal("one"))
       yield* source.publish(internal("two"))
+      expect(encodes).toBe(0)
       yield* source.publish(event("public"))
 
       expect(Array.from(yield* stream.pipe(Stream.take(1), Stream.runCollect))).toEqual([Agent.Event.Updated.type])
+      expect(encodes).toBe(1)
+    }),
+  )
+
+  it.effect("discards events after the only client unsubscribes", () =>
+    Effect.gen(function* () {
+      let encodes = 0
+      const source = makeSource()
+      const feed = yield* EventFeed.make(source.observe, {
+        encode: (event) => {
+          encodes += 1
+          return event.type
+        },
+      })
+
+      yield* Effect.scoped(feed.subscribe)
+      yield* source.publish(event("unsubscribed"))
+
+      expect(encodes).toBe(0)
     }),
   )
 

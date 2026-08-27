@@ -45,9 +45,7 @@ export const make = Effect.fn("EventFeed.make")(function* (
       for (const subscriber of current) Queue.failCauseUnsafe(subscriber, Cause.fail(error))
     })
 
-  const publish = Effect.fnUntraced(function* (event: Event.Payload) {
-    if (!isOpenCodeEvent(event)) return
-    if (subscribers.size === 0) return
+  const publishPublic = Effect.fnUntraced(function* (event: OpenCodeEvent) {
     const encoded = yield* Effect.try({
       try: () => render(event),
       catch: (cause) => new EncodingError({ eventID: event.id, eventType: event.type, cause }),
@@ -67,6 +65,11 @@ export const make = Effect.fn("EventFeed.make")(function* (
       Queue.failCauseUnsafe(subscriber, Cause.fail(new SubscriberOverflowError({ capacity })))
     }
   })
+
+  const publish = (event: Event.Payload) => {
+    if (!isOpenCodeEvent(event) || subscribers.size === 0) return Effect.void
+    return publishPublic(event)
+  }
 
   const unsubscribe = yield* observe(publish)
   yield* Effect.addFinalizer(() => unsubscribe)

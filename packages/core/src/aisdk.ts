@@ -214,12 +214,16 @@ export const locationLayer = Layer.effect(
       Effect.fn("AISDK.hook")(function* (callback: (event: Event) => Effect.Effect<void> | void) {
         const scope = yield* Scope.Scope
         let active = true
-        update([...hooks(), callback])
+        const registration = (event: Event) => callback(event)
+        update([...hooks(), registration])
         changed()
         const dispose = Effect.sync(() => {
           if (!active) return
           active = false
-          update(hooks().filter((item) => item !== callback))
+          const current = hooks()
+          const index = current.indexOf(registration)
+          if (index === -1) return
+          update([...current.slice(0, index), ...current.slice(index + 1)])
           changed()
         })
         yield* Scope.addFinalizer(scope, dispose)
@@ -256,6 +260,8 @@ export const locationLayer = Layer.effect(
       runSDK: (event) => run(sdkHooks, event),
       runLanguage: (event) => run(languageHooks, event),
       language: Effect.fn("AISDK.language")(function* (model) {
+        const sdkHooksAtStart = sdkHooks
+        const languageHooksAtStart = languageHooks
         const key = cacheKey({
           providerID: model.providerID,
           id: model.id,
@@ -291,12 +297,12 @@ export const locationLayer = Layer.effect(
             providerID: model.providerID,
             cause: new Error("No AISDK provider plugin returned an SDK"),
           })
-        sdks.set(sdkKey, sdk)
+        if (sdkHooks === sdkHooksAtStart) sdks.set(sdkKey, sdk)
         const result = yield* service.runLanguage({ model, sdk, options }).pipe(initError(model.providerID))
         const language = yield* Effect.sync(() => result.language ?? sdk.languageModel(model.modelID ?? model.id)).pipe(
           initError(model.providerID),
         )
-        languages.set(key, language)
+        if (sdkHooks === sdkHooksAtStart && languageHooks === languageHooksAtStart) languages.set(key, language)
         return language
       }),
       model: Effect.fn("AISDK.model")(function* (model) {
@@ -738,20 +744,22 @@ function streamPartEvents(
           providerMetadata: providerMetadata(event.providerMetadata),
         }),
       ])
-    case "finish":
+    case "finish": {
+      const finishMetadata = providerMetadata(event.providerMetadata)
       return Effect.succeed([
         LLMEvent.stepFinish({
           index: state.step++,
           reason: { normalized: finishReason(event.finishReason), raw: event.finishReason.raw },
           usage: usage(event.usage),
-          providerMetadata: providerMetadata(event.providerMetadata),
+          providerMetadata: finishMetadata,
         }),
         LLMEvent.finish({
           reason: { normalized: finishReason(event.finishReason), raw: event.finishReason.raw },
           usage: usage(event.usage),
-          providerMetadata: providerMetadata(event.providerMetadata),
+          providerMetadata: finishMetadata,
         }),
       ])
+    }
     case "error":
       return Effect.fail(llmError(event.error))
   }

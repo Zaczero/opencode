@@ -688,6 +688,46 @@ describe("Tool", () => {
     }),
   )
 
+  it.effect("reuses equivalent permission snapshots and invalidates registry changes", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      yield* transform(service, { echo: make() }, { codemode: false })
+      yield* transform(service, { grouped: make() })
+      const permissions: Permission.Ruleset = [{ action: "echo", resource: "*", effect: "allow" }]
+      const first = yield* service.snapshot(permissions)
+      const equivalent = yield* service.snapshot(permissions.map((rule) => ({ ...rule })))
+
+      expect(equivalent).toBe(first)
+      expect(equivalent.definitions).toBe(first.definitions)
+      expect(equivalent.codeModeCatalog).toBe(first.codeModeCatalog)
+
+      const denied = yield* service.snapshot([{ action: "echo", resource: "*", effect: "deny" }])
+      expect(denied).not.toBe(first)
+      expect(denied.definitions.map((tool) => tool.name)).toEqual(["execute"])
+      expect((yield* service.snapshot([{ action: "echo", resource: "*", effect: "deny" }]))).toBe(denied)
+
+      yield* transform(service, { added: make() }, { codemode: false })
+      const registered = yield* service.snapshot(permissions)
+      expect(registered).not.toBe(first)
+      expect(registered.definitions.map((tool) => tool.name)).toEqual(["added", "echo", "execute"])
+    }),
+  )
+
+  it.effect("invalidates cached snapshots when a scoped registration unwinds", () =>
+    Effect.gen(function* () {
+      const service = yield* Tool.Service
+      const scope = yield* Scope.make()
+      yield* transform(service, { echo: make() }, { codemode: false }).pipe(Scope.provide(scope))
+      const registered = yield* service.snapshot()
+
+      yield* Scope.close(scope, Exit.void)
+      const restored = yield* service.snapshot()
+
+      expect(restored).not.toBe(registered)
+      expect(restored.definitions.map((tool) => tool.name)).toEqual(["execute"])
+    }),
+  )
+
   it.effect("keeps permission options isolated between registrations", () =>
     Effect.gen(function* () {
       const service = yield* Tool.Service
@@ -819,13 +859,27 @@ describe("Tool", () => {
         },
         { codemode: false },
       )
-      yield* executeTool(service, {
+      const snapshot = yield* service.snapshot()
+      yield* snapshot.execute({
         sessionID,
         ...identity,
         call: { type: "tool-call", id: "call-context", name: "context", input: {} },
       })
+      yield* snapshot.execute({
+        sessionID: Session.ID.make("ses_other"),
+        agent: Agent.ID.make("plan"),
+        messageID: SessionMessage.ID.make("msg_other"),
+        call: { type: "tool-call", id: "call-other", name: "context", input: {} },
+      })
       expect(contexts).toEqual([
         { sessionID, ...identity, id: Tool.CallID.make("call-context"), progress: expect.any(Function) },
+        {
+          sessionID: Session.ID.make("ses_other"),
+          agent: Agent.ID.make("plan"),
+          messageID: SessionMessage.ID.make("msg_other"),
+          id: Tool.CallID.make("call-other"),
+          progress: expect.any(Function),
+        },
       ])
     }),
   )

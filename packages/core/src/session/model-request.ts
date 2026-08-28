@@ -296,7 +296,15 @@ export const layer = Layer.effect(
       // tool by moving its definition to a new key; recognizing the object recovers the tool.
       const given = new Map(
         tools.definitions.map(
-          (tool) => [{ description: tool.description, input: { ...tool.inputSchema } }, tool] as const,
+          (tool) => [
+            {
+              description: tool.description,
+              // The snapshot is shared and frozen, so a hook mutating a nested schema property would
+              // corrupt every later request. Input schemas are JSON data, so clone them outright.
+              input: JSON.parse(JSON.stringify(tool.inputSchema)),
+            },
+            tool,
+          ] as const,
         ),
       )
       // Hooks mutate this record in place: edit descriptions and schemas, rename, or remove.

@@ -31,7 +31,11 @@ type MessageEvent = Exclude<
   typeof SessionEvent.Forked.Type | typeof SessionEvent.Deleted.Type
 >
 
-const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Info)
+// Each lookup below already constrains type in the WHERE, so decoding through the whole
+// SessionMessage.Info union only to re-check the type afterwards is wasted work.
+const decodeAssistant = Schema.decodeUnknownSync(SessionMessage.Assistant)
+const decodeShell = Schema.decodeUnknownSync(SessionMessage.Shell)
+const decodeCompaction = Schema.decodeUnknownSync(SessionMessage.Compaction)
 const encodeMessage = Schema.encodeSync(SessionMessage.Info)
 
 export class SessionAlreadyProjected extends Error {}
@@ -227,8 +231,6 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
 
 function run(db: DatabaseService, event: MessageEvent) {
   return Effect.gen(function* () {
-    const decodeRow = (row: typeof SessionMessageTable.$inferSelect) =>
-      decodeMessage({ ...row.data, id: row.id, type: row.type })
     const updateMessage = (message: SessionMessage.Info) => {
       const encoded = encodeMessage(message)
       const { id, type, ...data } = encoded
@@ -299,7 +301,11 @@ function run(db: DatabaseService, event: MessageEvent) {
         return Effect.gen(function* () {
           // A newer step supersedes stale incomplete rows; never resume an older assistant projection.
           const row = yield* db
-            .select()
+            .select({
+              id: SessionMessageTable.id,
+              type: SessionMessageTable.type,
+              data: SessionMessageTable.data,
+            })
             .from(SessionMessageTable)
             .where(
               and(eq(SessionMessageTable.session_id, event.data.sessionID), eq(SessionMessageTable.type, "assistant")),
@@ -309,14 +315,18 @@ function run(db: DatabaseService, event: MessageEvent) {
             .get()
             .pipe(Effect.orDie)
           if (!row) return
-          const message = decodeRow(row)
-          return message.type === "assistant" && !message.time.completed ? message : undefined
+          const message = decodeAssistant({ ...row.data, id: row.id, type: row.type })
+          return message.time.completed ? undefined : message
         })
       },
       getAssistant(messageID) {
         return Effect.gen(function* () {
           const row = yield* db
-            .select()
+            .select({
+              id: SessionMessageTable.id,
+              type: SessionMessageTable.type,
+              data: SessionMessageTable.data,
+            })
             .from(SessionMessageTable)
             .where(
               and(
@@ -328,14 +338,17 @@ function run(db: DatabaseService, event: MessageEvent) {
             .get()
             .pipe(Effect.orDie)
           if (!row) return
-          const message = decodeRow(row)
-          return message.type === "assistant" ? message : undefined
+          return decodeAssistant({ ...row.data, id: row.id, type: row.type })
         })
       },
       getShell(shellID) {
         return Effect.gen(function* () {
           const row = yield* db
-            .select()
+            .select({
+              id: SessionMessageTable.id,
+              type: SessionMessageTable.type,
+              data: SessionMessageTable.data,
+            })
             .from(SessionMessageTable)
             .where(
               and(
@@ -349,14 +362,17 @@ function run(db: DatabaseService, event: MessageEvent) {
             .get()
             .pipe(Effect.orDie)
           if (!row) return
-          const message = decodeRow(row)
-          return message.type === "shell" ? message : undefined
+          return decodeShell({ ...row.data, id: row.id, type: row.type })
         })
       },
       getCompaction() {
         return Effect.gen(function* () {
           const row = yield* db
-            .select()
+            .select({
+              id: SessionMessageTable.id,
+              type: SessionMessageTable.type,
+              data: SessionMessageTable.data,
+            })
             .from(SessionMessageTable)
             .where(
               and(
@@ -370,8 +386,7 @@ function run(db: DatabaseService, event: MessageEvent) {
             .get()
             .pipe(Effect.orDie)
           if (!row) return
-          const message = decodeRow(row)
-          return message.type === "compaction" ? message : undefined
+          return decodeCompaction({ ...row.data, id: row.id, type: row.type })
         })
       },
       updateAssistant: updateMessage,

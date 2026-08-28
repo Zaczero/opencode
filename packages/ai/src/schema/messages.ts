@@ -424,7 +424,12 @@ export namespace LLMRequest {
   ): LLMRequest<Model>
   export function update(request: LLMRequest, patch: Partial<Input>): LLMRequest
   export function update(request: LLMRequest, patch: Partial<Input>) {
-    if (Object.keys(patch).length === 0) return request
+    const keys = Object.keys(patch) as Array<keyof Input>
+    if (
+      keys.length === 0 ||
+      keys.every((key) => (key === "model" && patch.model === undefined) || patch[key] === request[key])
+    )
+      return request
     return new LLMRequest({
       ...input(request),
       ...patch,

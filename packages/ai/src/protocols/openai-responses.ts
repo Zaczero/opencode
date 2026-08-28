@@ -126,7 +126,10 @@ const decodeBody = ProviderShared.validateWith(Schema.decodeUnknownEffect(OpenAI
 
 const fromRequest = Effect.fn("OpenAIResponses.fromRequest")(function* (request: LLMRequest) {
   const body = yield* OpenResponses.fromRequestWithExtension(
-    LLMRequest.update(request, { tools: [], toolChoice: undefined }),
+    LLMRequest.update(request, {
+      tools: [],
+      toolChoice: request.toolChoice?.type === "none" ? request.toolChoice : undefined,
+    }),
     extension,
   )
   const toolSchemaCompatibility = request.model.compatibility?.toolSchema

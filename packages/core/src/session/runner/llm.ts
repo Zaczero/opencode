@@ -22,6 +22,7 @@ import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { llmClient } from "../../effect/app-node-platform.js"
 import { StepFailedError } from "../error.js"
 import { SessionRunnerRetry } from "./retry.js"
+import type { SessionRunnerModel } from "./model.js"
 import { SessionStep } from "./step.js"
 import { ToolOutput } from "../../tool-output.js"
 import { PluginSupervisor } from "../../plugin/supervisor.js"
@@ -151,6 +152,12 @@ const layer = Layer.effect(
                       messages: yield* store.context(sessionID, history),
                       inputID: pending.id,
                       started: true,
+                      prepareRequest: (resolved) =>
+                        prepareContext(sessionID).pipe(
+                          Effect.flatMap((selection) => context.load(selection, history)),
+                          Effect.flatMap((loaded) => requestForPrefix(loaded, resolved)),
+                          Effect.orElseSucceed(() => undefined),
+                        ),
                     })
                   }),
                 ).pipe(Effect.exit)
@@ -258,6 +265,27 @@ const layer = Layer.effect(
       }
     })
 
+    /**
+     * The request this turn would send, handed to compaction so the summarizer reuses the prefix the
+     * provider has already cached. Failing to build one only costs the optimization.
+     */
+    const requestForPrefix = (loaded: SessionContext.Loaded, resolved: SessionRunnerModel.Resolved) =>
+      Effect.gen(function* () {
+        const transcript = SessionModelRequest.baseTranscript({
+          agent: loaded.agent.info,
+          model: resolved,
+          tools: loaded.tools,
+          initial: loaded.initial,
+          messages: loaded.messages,
+        })
+        const prepared = yield* context.prepare({
+          scope: { session: loaded.session, agentID: loaded.agent.id, model: resolved, tools: loaded.tools },
+          transcript: { system: transcript.system, messages: transcript.messages },
+          webSocket: "session",
+        })
+        return prepared.request
+      }).pipe(Effect.orElseSucceed(() => undefined))
+
     const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
       const selected = yield* context.select(sessionID)
       // A blocked initial instruction baseline must leave admitted input pending.
@@ -287,6 +315,7 @@ const layer = Layer.effect(
           messages: loaded.messages,
           resolved: loaded.model,
           prepare: context.prepare,
+          prepareRequest: (resolved: SessionRunnerModel.Resolved) => requestForPrefix(loaded, resolved),
         }
         if (compaction.required(compactionInput)) {
           const compacted = yield* compaction.compact(compactionInput)

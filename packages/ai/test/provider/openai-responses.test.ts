@@ -108,6 +108,23 @@ const expectToolOutput = (body: OpenAIResponses.OpenAIResponsesBody): OpenAITool
 }
 
 describe("OpenAI Responses route", () => {
+  it.effect("disables tool calls without dropping definitions or honoring a required allowlist", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          prompt: "Summarize the conversation without calling tools",
+          tools: [{ name: "read", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
+          toolChoice: { type: "none", disableParallelToolUse: true },
+          providerOptions: { allowedTools: { toolNames: ["read"], mode: "required" } },
+        }),
+      )
+      expect(prepared.body.tool_choice).toBe("none")
+      expect(prepared.body.tools).toHaveLength(1)
+      expect(prepared.body.parallel_tool_calls).toBe(false)
+    }),
+  )
+
   it.effect("prepares OpenAI Responses target", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(request)
@@ -1649,7 +1666,7 @@ describe("OpenAI Responses route", () => {
             ToolDefinition.make({ name: "read", description: "Read a file", inputSchema: { type: "object" } }),
             ToolDefinition.make({ name: "grep", description: "Search files", inputSchema: { type: "object" } }),
           ],
-          toolChoice: "none",
+          toolChoice: "auto",
           providerOptions: {
             reasoningEffort: "high",
             reasoningSummary: "auto",

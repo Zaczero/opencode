@@ -724,6 +724,7 @@ export const resolveParallelToolCalls = (request: LLMRequest) => {
 }
 
 const allowedToolChoice = (request: LLMRequest) => {
+  if (request.toolChoice?.type === "none") return undefined
   const allowed = OpenResponsesOptions.resolve(request).allowedTools
   if (!allowed) return undefined
   return {

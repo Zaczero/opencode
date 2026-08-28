@@ -1,6 +1,6 @@
 export * as SessionCompaction from "./compaction.js"
 
-import { LLMClient, AIError, LLMEvent, Message, type LLMRequest } from "@opencode-ai/ai"
+import { LLMClient, AIError, LLMEvent, LLMRequest, Message, ToolChoice } from "@opencode-ai/ai"
 import type { StreamOptions } from "@opencode-ai/ai/route"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
@@ -15,6 +15,7 @@ import type { SessionModelRequest } from "./model-request.js"
 import type { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
 import { toSessionError } from "./to-session-error.js"
+import { toLLMMessages } from "./runner/to-llm-message.js"
 import { Token } from "../util/token.js"
 import { SessionUsage } from "./usage.js"
 import { Agent } from "../agent.js"
@@ -74,11 +75,19 @@ type Dependencies = {
   }
 }
 
+/**
+ * Builds the request whose cached prefix the summarizer reuses. Called only once compaction has
+ * decided to run and resolved its model: an empty session must still fail without resolving one,
+ * and a turn that never compacts must not pay to build a request it will not send.
+ */
+type PrepareRequest = (resolved: SessionRunnerModel.Resolved) => Effect.Effect<LLMRequest | undefined>
+
 export type AutoInput = {
   readonly session: SessionSchema.Info
   readonly messages: readonly SessionMessage.Info[]
   readonly resolved: SessionRunnerModel.Resolved
   readonly prepare: SessionModelRequest.Interface["prepare"]
+  readonly prepareRequest?: PrepareRequest
 }
 
 type RequiredInput = Pick<AutoInput, "messages" | "resolved">
@@ -91,12 +100,16 @@ export type ManualInput = {
   /** Invoked after content planning, not when the caller captures the operation. */
   readonly resolveModel: SessionContext.Interface["resolveModel"]
   readonly prepare: SessionModelRequest.Interface["prepare"]
+  readonly prepareRequest?: PrepareRequest
 }
 
 type Plan = {
   readonly session: SessionSchema.Info
   readonly resolved: SessionRunnerModel.Resolved
   readonly reason: SessionMessage.Compaction["reason"]
+  readonly messages: readonly SessionMessage.Info[]
+  readonly head: readonly SessionMessage.Info[]
+  readonly request?: LLMRequest
   readonly previousSummary?: string
   readonly context: readonly string[]
   readonly prompt: string
@@ -180,10 +193,79 @@ const serialize = (message: SessionMessage.Info) => {
   return ""
 }
 
+const hasCompletedCompaction = (messages: readonly SessionMessage.Info[]) =>
+  messages.some((message) => message.type === "compaction" && message.status === "completed")
+
+const prefixMessages = (messages: readonly SessionMessage.Info[], head: readonly SessionMessage.Info[]) => {
+  const boundary = head.at(-1)?.id
+  if (boundary === undefined)
+    return messages.filter((message) => message.type === "compaction" || message.type === "system")
+  const index = messages.findIndex((message) => message.id === boundary)
+  return index < 0 ? messages : messages.slice(0, index + 1)
+}
+
+const canonical = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (value === null || typeof value !== "object") return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonical(child)]),
+  )
+}
+
+const sameMessageShape = (left: LLMRequest["messages"][number], right: LLMRequest["messages"][number]) =>
+  JSON.stringify(canonical({ role: left.role, content: left.content })) ===
+  JSON.stringify(canonical({ role: right.role, content: right.content }))
+
+/**
+ * The slice of an in-flight request the summarizer can reuse verbatim, so compaction hits the
+ * provider's prompt cache instead of paying a cold prefix for a one-message request.
+ */
+const cachePrefix = (input: {
+  readonly request: LLMRequest
+  readonly messages: readonly SessionMessage.Info[]
+  readonly head: readonly SessionMessage.Info[]
+  readonly resolved: SessionRunnerModel.Resolved
+}) => {
+  const providerMetadataKey = input.resolved.model.route.providerMetadataKey ?? input.resolved.model.provider
+  const source = prefixMessages(input.messages, input.head)
+  const boundary = source.at(-1)?.id
+  const boundaryIndex =
+    boundary === undefined ? -1 : input.request.messages.findIndex((message) => message.id === boundary)
+  let end = boundaryIndex + 1
+  if (boundaryIndex < 0) {
+    // Context hooks can insert id-less messages, so fall back to matching the lowered shapes in order.
+    const lowered = toLLMMessages(source, input.resolved.ref, providerMetadataKey)
+    end = 0
+    for (const expected of lowered) {
+      const identity =
+        expected.id === undefined
+          ? -1
+          : input.request.messages.findIndex((message, position) => position >= end && message.id === expected.id)
+      const index =
+        identity >= 0
+          ? identity
+          : input.request.messages.findIndex(
+              (message, position) => position >= end && sameMessageShape(message, expected),
+            )
+      if (index < 0) return []
+      end = index + 1
+    }
+  }
+  // Never split a tool call from its result.
+  let complete = end
+  while (complete > 0 && complete < input.request.messages.length && input.request.messages[complete]?.role === "tool")
+    complete += 1
+  return input.request.messages.slice(0, complete)
+}
+
 const select = (
   messages: readonly SessionMessage.Info[],
   tokens: number,
-): { readonly head: string; readonly recent: string } | undefined => {
+):
+  | { readonly head: string; readonly headMessages: readonly SessionMessage.Info[]; readonly recent: string }
+  | undefined => {
   const conversation = messages
     .filter((message) => message.type !== "compaction" && message.type !== "system")
     .flatMap((message) => {
@@ -209,6 +291,7 @@ const select = (
       .slice(0, split)
       .map((item) => item.text)
       .join("\n\n"),
+    headMessages: conversation.slice(0, split).map((item) => item.message),
     recent: conversation
       .slice(split)
       .map((item) => item.text)
@@ -240,6 +323,7 @@ const planContent = (messages: readonly SessionMessage.Info[], tokens: number) =
     // Surfaced alongside the built prompt so the compaction hook can rebuild it rather than parse it.
     previousSummary: previousSummary?.summary,
     context,
+    head: selected.headMessages,
     prompt: buildPrompt({ previousSummary: previousSummary?.summary, context }),
     recent: summarizeRecent ? "" : selected.recent,
   }
@@ -289,19 +373,39 @@ const make = (dependencies: Dependencies) => {
     )
     // The summarizer request is excluded from the session context hook, so this is the only seam a
     // plugin has to shape the compaction prompt.
+    // Reuse the turn's cached prefix when there is one: the history then already sits in the
+    // messages, so the prompt carries only the instruction and the context text is dropped from it.
+    const firstCompaction = plan.head.length === 0 && !hasCompletedCompaction(plan.messages)
+    const prefix =
+      plan.request !== undefined && !firstCompaction
+        ? cachePrefix({ request: plan.request, messages: plan.messages, head: plan.head, resolved: plan.resolved })
+        : []
+    const cachePreserved = prefix.length > 0
     const hooked = yield* dependencies.hooks.trigger("session", "compaction", {
       sessionID: plan.session.id,
       reason: plan.reason,
-      previousSummary: plan.previousSummary,
-      context: [...plan.context],
-      prompt: plan.prompt,
+      previousSummary: cachePreserved ? undefined : plan.previousSummary,
+      context: cachePreserved ? [] : [...plan.context],
+      prompt: cachePreserved ? buildPrompt({ context: [] }) : plan.prompt,
     })
     const prepared = yield* plan.prepare({
       scope: { session: plan.session, agentID: Agent.ID.make("compaction"), model: plan.resolved },
       transcript: { system: [], messages: [Message.user(hooked.prompt)] },
       contextHooks: false,
     })
-    yield* dependencies.llm.stream(prepared.request, prepared.options).pipe(
+    const request =
+      cachePreserved && plan.request
+        ? LLMRequest.update(plan.request, {
+            model: prepared.request.model,
+            http: prepared.request.http,
+            messages: [...prefix, Message.user(hooked.prompt)],
+            toolChoice: ToolChoice.make({
+              type: "none",
+              disableParallelToolUse: plan.request.toolChoice?.disableParallelToolUse,
+            }),
+          })
+        : prepared.request
+    yield* dependencies.llm.stream(request, prepared.options).pipe(
       Stream.runForEach((event) => {
         if (LLMEvent.is.providerError(event))
           failure = {
@@ -368,6 +472,8 @@ const make = (dependencies: Dependencies) => {
         resolved: input.resolved,
         prepare: input.prepare,
         reason: "auto",
+        messages: input.messages,
+        request: input.prepareRequest ? yield* input.prepareRequest(input.resolved) : undefined,
         ...content,
       })
     return yield* failed({
@@ -417,11 +523,14 @@ const make = (dependencies: Dependencies) => {
       ),
     )
     if ("status" in resolved) return resolved
+    const request = input.prepareRequest ? yield* input.prepareRequest(resolved) : undefined
     return yield* execute({
       session: input.session,
       resolved,
       prepare: input.prepare,
       reason: "manual",
+      messages: input.messages,
+      request,
       inputID: input.inputID,
       started: input.started,
       ...content,

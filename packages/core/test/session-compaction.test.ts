@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { LLMClient, LLMEvent, LanguageModel, SystemPart, type LLMRequest } from "@opencode-ai/ai"
+import { LLM, LLMClient, LLMEvent, LanguageModel, Message, SystemPart, type LLMRequest } from "@opencode-ai/ai"
 import { OpenAIChat } from "@opencode-ai/ai/protocols"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -291,6 +291,52 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
       { type: Bus.versionedType(SessionEvent.UsageRecorded.type, 1) },
       { type: Bus.versionedType(SessionEvent.Compaction.Ended.type, 1) },
     ])
+  }),
+)
+
+it.effect("compaction preserves the complete request prefix without enabling tools", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    const modelRequests = yield* SessionModelRequest.Service
+    const session = yield* insertSession(Session.ID.make("ses_compaction_prefix"))
+    const messages = [
+      { id: SessionMessage.ID.create(), type: "user", text: "Older work", time: { created: DateTime.makeUnsafe(0) } },
+      { id: SessionMessage.ID.create(), type: "user", text: "Recent work", time: { created: DateTime.makeUnsafe(1) } },
+    ] satisfies SessionMessage.Info[]
+    const source = LLM.request({
+      model,
+      system: ["Stable agent instructions", "Stable project instructions"].map(SystemPart.make),
+      messages: messages.map((message) => Message.make({ id: message.id, role: "user", content: message.text })),
+      tools: [{ name: "inspect", description: "Inspect files", inputSchema: { type: "object", properties: {} } }],
+      toolChoice: { type: "auto", disableParallelToolUse: true },
+      generation: { temperature: 0.3 },
+      providerOptions: { reasoningEffort: "high", parallelToolCalls: false },
+      promptCacheKey: "original-cache-affinity",
+      cache: { system: true, tools: true, messages: { tail: 1 } },
+    })
+    expect(
+      yield* compaction.compactManual({
+        session,
+        resolveModel: () => Effect.succeed(resolved),
+        prepare: modelRequests.prepare,
+        prepareRequest: () => Effect.succeed(source),
+        messages,
+        inputID: SessionMessage.ID.make("msg_compaction_prefix"),
+      }),
+    ).toEqual({ status: "completed" })
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].system).toEqual(source.system)
+    expect(requests[0].tools).toEqual(source.tools)
+    expect(requests[0].generation).toEqual(source.generation)
+    expect(requests[0].providerOptions).toEqual(source.providerOptions)
+    expect(requests[0].cache).toEqual(source.cache)
+    expect(requests[0].promptCacheKey).toBe("original-cache-affinity")
+    expect(requests[0].messages.slice(0, -1)).toEqual(source.messages.slice(0, 1))
+    expect(requests[0].toolChoice?.type).toBe("none")
+    expect(requests[0].toolChoice?.disableParallelToolUse).toBe(true)
+    expect(requests[0].http?.headers?.["X-Session-Id"]).toBe(session.id)
   }),
 )
 

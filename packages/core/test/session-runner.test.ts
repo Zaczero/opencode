@@ -2247,7 +2247,10 @@ describe("SessionRunnerLLM", () => {
       expect(requests).toHaveLength(4)
       expect(userTexts(requests[1])).toContain("Steer after compaction")
       expect(userTexts(requests[1])).toContain("Completion after compaction")
-      expect(userTexts(requests[2])[0]).toContain("Create a new anchored summary")
+      // Manual /compact reuses the session's cached prefix too, so the instruction is the last user
+      // message behind that prefix rather than a lone cold one.
+      expect(userTexts(requests[2]).some((text) => text.includes("Create a new anchored summary"))).toBe(true)
+      expect(userTexts(requests[2]).length).toBeGreaterThan(1)
       expect(userTexts(requests[3])).toContain("Queue after compaction")
       expect(yield* SessionInbox.find((yield* Database.Service).db, first.id)).toBeUndefined()
       expect((yield* session.messages({ sessionID })).find((message) => message.id === first.id)).toMatchObject({
@@ -2510,7 +2513,11 @@ describe("SessionRunnerLLM", () => {
       yield* runPrompt(session, "Recent exact request ".repeat(180))
 
       expect(requests).toHaveLength(2)
-      expect(userTexts(requests[0])[0]).toContain("## Objective")
+      // The summarizer reuses the request that triggered the compaction, so its cached prefix is
+      // still ahead of the prompt rather than being paid for again.
+      expect(userTexts(requests[0]).some((text) => text.includes("## Objective"))).toBe(true)
+      expect(userTexts(requests[0]).some((text) => text.includes("Earlier question"))).toBe(true)
+      expect(userTexts(requests[0]).length).toBeGreaterThan(1)
       expect(userTexts(requests[1])).toHaveLength(1)
       expect(userTexts(requests[1])[0]).toContain("<summary>\n## Objective\n- Preserve the task\n</summary>")
       expect(userTexts(requests[1])[0]).toContain(`[User]: ${"Recent exact request ".repeat(180)}`)
@@ -2531,10 +2538,15 @@ describe("SessionRunnerLLM", () => {
       yield* runPrompt(session, "Newest exact request ".repeat(180))
 
       expect(requests).toHaveLength(2)
-      expect(userTexts(requests[0])[0]).toContain(
-        "<previous-summary>\n## Objective\n- Preserve the task\n</previous-summary>",
-      )
-      expect(userTexts(requests[0])[0]).toContain("Recent exact request")
+      // The earlier summary now reaches the summarizer through the reused prefix's checkpoint rather
+      // than being restated inside the prompt, so nothing is sent twice.
+      expect(
+        userTexts(requests[0]).some((text) =>
+          text.includes("<summary>\n## Objective\n- Preserve the task\n</summary>"),
+        ),
+      ).toBe(true)
+      expect(userTexts(requests[0]).some((text) => text.includes("Recent exact request"))).toBe(true)
+      expect(userTexts(requests[0]).every((text) => !text.includes("<previous-summary>"))).toBe(true)
       expect((yield* (yield* SessionStore.Service).context(sessionID))[0]).toMatchObject({
         type: "compaction",
         summary: "## Objective\n- Preserve the updated task",
@@ -2601,7 +2613,11 @@ describe("SessionRunnerLLM", () => {
       yield* runPrompt(session, "Continue")
 
       expect(requests).toHaveLength(3)
-      expect(userTexts(requests[1])[0]).toContain("## Objective")
+      // The summarizer reuses the overflowing request's cached prefix, so the prompt is the last
+      // user message rather than the only one, and the conversation ahead of it is still there.
+      expect(userTexts(requests[1]).some((text) => text.includes("## Objective"))).toBe(true)
+      expect(userTexts(requests[1]).some((text) => text.includes("Earlier question"))).toBe(true)
+      expect(userTexts(requests[1]).length).toBeGreaterThan(1)
       expect(userTexts(requests[2])[0]).toContain("<summary>\n## Objective\n- Recover overflow\n</summary>")
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "compaction", summary: "## Objective\n- Recover overflow" },

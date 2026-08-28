@@ -3469,6 +3469,135 @@ describe("SessionRunnerLLM", () => {
     ])
   })
 
+  it.effect("consults the completion hook at every idle boundary of a drain", () =>
+    Effect.gen(function* () {
+      const s = yield* setup
+      const hooks = yield* PluginHooks.Service
+      const seen: Array<{ sessionID: Session.ID; interactive: boolean }> = []
+      // Continues twice, then declines: the hook, not the drain, decides when the nudging stops.
+      yield* hooks.register("session", "before-complete", (event) =>
+        Effect.sync(() => {
+          seen.push({ sessionID: event.sessionID, interactive: event.interactive })
+          if (seen.length > 2) return
+          event.continuation = {
+            text: `Continue the unfinished work ${seen.length}`,
+            description: "continue unfinished work",
+            metadata: { source: "test" },
+          }
+        }),
+      )
+      yield* s.admit("Start working")
+      yield* s.llm.push(TestLLM.stop(), TestLLM.stop(), TestLLM.text("Finished", "text-finished"))
+
+      yield* s.resume
+
+      expect(seen).toEqual([
+        { sessionID, interactive: false },
+        { sessionID, interactive: false },
+        { sessionID, interactive: false },
+      ])
+      expect(s.requests).toHaveLength(3)
+      expect(userTexts(s.requests[0])).toEqual(["Start working"])
+      expect(userTexts(s.requests[1])).toEqual(["Start working", "Continue the unfinished work 1"])
+      expect(userTexts(s.requests[2])).toEqual([
+        "Start working",
+        "Continue the unfinished work 1",
+        "Continue the unfinished work 2",
+      ])
+      expect(yield* s.context).toMatchObject([
+        { type: "user", text: "Start working" },
+        { type: "assistant" },
+        { type: "synthetic", text: "Continue the unfinished work 1" },
+        { type: "assistant" },
+        { type: "synthetic", text: "Continue the unfinished work 2" },
+        { type: "assistant", content: [{ type: "text", text: "Finished" }] },
+      ])
+    }),
+  )
+
+  it.effect("reports an interactive stop to completion hooks", () =>
+    Effect.gen(function* () {
+      const s = yield* setup
+      const registry = yield* Tool.Service
+      yield* transformTools(
+        registry,
+        {
+          question: {
+            name: "question",
+            description: "Ask a question",
+            input: Schema.Struct({}),
+            output: Schema.Struct({}),
+            execute: () => Effect.succeed({ content: "answered" }),
+          },
+        },
+        { codemode: false },
+      )
+      const hooks = yield* PluginHooks.Service
+      const seen: boolean[] = []
+      yield* hooks.register("session", "before-complete", (event) =>
+        Effect.sync(() => {
+          seen.push(event.interactive)
+        }),
+      )
+      yield* s.admit("Ask the user")
+      yield* s.llm.push(TestLLM.tool("call-question", "question", {}), TestLLM.stop())
+
+      yield* s.resume
+
+      expect(seen).toEqual([true])
+    }),
+  )
+
+  it.effect("does not fail a session when the completion hook fails", () =>
+    Effect.gen(function* () {
+      const s = yield* setup
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "before-complete", () => Effect.die("hook unavailable"))
+      yield* s.admit("Start working")
+      yield* s.llm.push(TestLLM.stop())
+
+      yield* s.resume
+
+      expect(s.requests).toHaveLength(1)
+    }),
+  )
+
+  it.effect("does not fail a session when a completion continuation is invalid", () =>
+    Effect.gen(function* () {
+      const s = yield* setup
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "before-complete", (event) =>
+        Effect.sync(() => {
+          event.continuation = { text: undefined as unknown as string }
+        }),
+      )
+      yield* s.admit("Start working")
+      yield* s.llm.push(TestLLM.stop())
+
+      yield* s.resume
+
+      expect(s.requests).toHaveLength(1)
+    }),
+  )
+
+  it.effect("propagates a provider failure after a completion continuation", () =>
+    Effect.gen(function* () {
+      const s = yield* setup
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "before-complete", (event) =>
+        Effect.sync(() => {
+          event.continuation = { text: "Continue after the first pass" }
+        }),
+      )
+      yield* s.admit("Start working")
+      const failure = invalidRequest()
+      yield* s.llm.push(TestLLM.stop(), Stream.fail(failure))
+
+      expect(yield* s.resume.pipe(Effect.flip)).toBe(failure)
+      expect(s.requests).toHaveLength(2)
+    }),
+  )
+
   scenario("steers an active step with newly recorded prompts", function* (s) {
     yield* s.admit("Start working")
 

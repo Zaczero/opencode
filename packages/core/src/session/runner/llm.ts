@@ -197,6 +197,12 @@ const layer = Layer.effect(
                 force = true
                 continue
               }
+              // Only the input this drain is entering on: a steer promoted mid-drain has other work
+              // behind it, and a withdrawn one must not end the turn.
+              const expectedInputID =
+                entering && !continuing && (pending?.type === "user" || pending?.type === "synthetic")
+                  ? pending.id
+                  : undefined
               const ready = yield* restore(
                 Effect.gen(function* () {
                   const selected = yield* prepareContext(sessionID)
@@ -208,6 +214,9 @@ const layer = Layer.effect(
                   )
                   // A control admitted during context preparation owns this boundary.
                   if (promoted === undefined) return undefined
+                  // The probed input can be withdrawn between the probe and the promote. Going ahead
+                  // would call the model with nothing new in the transcript.
+                  if (expectedInputID !== undefined && promoted === 0) return DrainResult.Complete()
                   if (promoted > 0 && !selected.session.parentID && SessionTitle.isUntitled(selected.session))
                     yield* FiberMap.run(titles, sessionID, title.generate(sessionID), {
                       onlyIfMissing: true,

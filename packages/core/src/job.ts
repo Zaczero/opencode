@@ -128,6 +128,16 @@ export interface Interface {
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
+  /**
+   * Jobs still running on behalf of a session -- any background work it owns and will react to, whether
+   * a shell or another subagent. A session with one of these outstanding has not finished, however idle
+   * its own execution looks.
+   */
+  readonly running: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
+  /** Wait for currently owned processes and undelivered results; return whether any were present. */
+  readonly awaitOwned: (sessionID: SessionSchema.ID) => Effect.Effect<boolean>
+  /** Sessions with work that is still running on their behalf. */
+  readonly activeSessions: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
@@ -166,6 +176,15 @@ function decrementSession(input: Map<SessionSchema.ID, number>, sessionID: Sessi
  */
 export const make = Effect.gen(function* () {
   const kv = yield* KV.Service
+  const deliveries = new Map<SessionMessage.ID, { background: Background; done: Deferred.Deferred<void> }>()
+  let after: string | undefined
+  do {
+    const page = yield* kv.scan({ prefix: backgroundPrefix, after })
+    for (const background of Array.filterMap(page.entries, (entry) => decodeBackground(entry.value))) {
+      deliveries.set(background.notificationID, { background, done: yield* Deferred.make<void>() })
+    }
+    after = page.next
+  } while (after)
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map()),
     scope: yield* Scope.Scope,
@@ -371,6 +390,29 @@ export const make = Effect.gen(function* () {
     return result.map((item) => item.info)
   })
 
+  const running: Interface["running"] = Effect.fn("Job.running")(function* (sessionID) {
+    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const found: Info[] = []
+    for (const job of jobs.values())
+      if (job.info.status === "running" && job.info.metadata?.["sessionID"] === sessionID) found.push(snapshot(job))
+    return found
+  })
+
+  const activeSessions: Interface["activeSessions"] = Effect.gen(function* () {
+    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const sessions = new Set<SessionSchema.ID>()
+    for (const job of jobs.values()) {
+      const sessionID = job.info.metadata?.["sessionID"]
+      if (job.info.status === "running" && typeof sessionID === "string") sessions.add(SessionSchema.ID.make(sessionID))
+    }
+    for (const { background } of deliveries.values()) {
+      sessions.add(
+        background.recovery.kind === "shell" ? background.recovery.sessionID : background.recovery.parentSessionID,
+      )
+    }
+    return sessions
+  }).pipe(Effect.withSpan("Job.activeSessions"))
+
   const cancel: Interface["cancel"] = Effect.fn("Job.cancel")(function* (id) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
@@ -408,8 +450,37 @@ export const make = Effect.gen(function* () {
     return recovered
   }).pipe(Effect.withSpan("Job.pendingBackground"))
 
-  const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")((notificationID) =>
-    kv.remove(`${backgroundPrefix}${notificationID}`),
+  const awaitOwned: Interface["awaitOwned"] = Effect.fn("Job.awaitOwned")(function* (sessionID) {
+    const registry = yield* SynchronizedRef.get(state.jobs)
+    const waits = [
+      ...Array.fromIterable(registry.values())
+        .filter((job) => job.info.metadata?.["sessionID"] === sessionID)
+        .map((job) => Deferred.await(job.done).pipe(Effect.asVoid)),
+      ...Array.fromIterable(deliveries.values())
+        .filter(
+          ({ background }) =>
+            (background.recovery.kind === "shell"
+              ? background.recovery.sessionID
+              : background.recovery.parentSessionID) === sessionID,
+        )
+        .map((entry) => Deferred.await(entry.done)),
+    ]
+    yield* Effect.all(waits, { discard: true })
+    return waits.length > 0
+  })
+
+  const completeBackground: Interface["completeBackground"] = Effect.fn("Job.completeBackground")(
+    function* (notificationID) {
+      yield* SynchronizedRef.modifyEffect(state.jobs, (registry) =>
+        Effect.gen(function* () {
+          yield* kv.remove(`${backgroundPrefix}${notificationID}`)
+          const delivery = deliveries.get(notificationID)
+          deliveries.delete(notificationID)
+          if (delivery) yield* Deferred.succeed(delivery.done, undefined)
+          return [undefined, registry] as const
+        }),
+      )
+    },
   )
 
   return Service.of({
@@ -419,6 +490,9 @@ export const make = Effect.gen(function* () {
     block,
     background,
     backgroundAll,
+    running,
+    awaitOwned,
+    activeSessions,
     cancel,
     pendingBackground,
     completeBackground,

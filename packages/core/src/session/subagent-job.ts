@@ -25,7 +25,20 @@ export const make: Effect.Effect<Runner, never, Session.Service | Job.Service | 
     if (notifications.has(key)) return
     notifications.add(key)
     yield* Effect.gen(function* () {
-      const info = (yield* jobs.wait({ id: recovery.childSessionID })).info
+      let info = (yield* jobs.wait({ id: recovery.childSessionID })).info
+      while (info && info.status !== "running") {
+        const outstanding = yield* jobs.running(recovery.childSessionID)
+        if (outstanding.length === 0) break
+        yield* Effect.forEach(outstanding, (job) => jobs.wait({ id: job.id }), { discard: true })
+        yield* sessions.wait(recovery.childSessionID)
+        info = (yield* jobs.wait({ id: recovery.childSessionID })).info
+      }
+      if (info?.status === "completed") {
+        const messages = yield* sessions.messages({ sessionID: recovery.childSessionID, order: "desc", limit: 20 })
+        info = { ...info, output: SubagentCompletion.text(messages.find((message) =>
+          message.type === "assistant" && message.time.completed !== undefined && message.error === undefined,
+        )) }
+      }
       if (info) yield* SubagentCompletion.deliver(sessions, jobs, { ...info, recovery })
     }).pipe(
       Effect.ensuring(Effect.sync(() => notifications.delete(key))),
@@ -39,7 +52,7 @@ export const make: Effect.Effect<Runner, never, Session.Service | Job.Service | 
         id: recovery.childSessionID,
         type: "subagent",
         title: recovery.description,
-        metadata: {},
+        metadata: { sessionID: recovery.parentSessionID, childID: recovery.childSessionID },
         recovery,
         run: Effect.gen(function* () {
           yield* sessions.resume(recovery.childSessionID)

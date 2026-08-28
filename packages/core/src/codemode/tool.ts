@@ -191,31 +191,34 @@ export const catalog = (inventory: Inventory) => {
       signature: tool.signature,
       pinned: pinned.has(tool.path),
     }
-  return {
+  return Object.freeze({
     tools: renderCatalog(root),
-  } satisfies CodeModeCatalog.Inventory
+  }) satisfies CodeModeCatalog.Inventory
 }
 
 type CatalogNode = Node<CodeModeCatalog.Tool>
 
 function renderCatalog(root: CatalogNode): ReadonlyArray<CodeModeCatalog.Tool | CodeModeCatalog.Namespace> {
-  return Array.from(root.children)
-    .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .flatMap(([name, node]) => {
-      const tools = renderCatalog(node)
-      const namespace =
-        node.namespace === undefined && tools.length === 0
-          ? undefined
-          : {
-              type: "namespace" as const,
-              name,
-              ...(node.namespace?.description === undefined ? {} : { description: node.namespace.description }),
-              tools,
-            }
-      if (node.tool === undefined) return namespace === undefined ? [] : [namespace]
-      if (namespace === undefined) return [node.tool]
-      return [node.tool, namespace]
-    })
+  return Object.freeze(
+    Array.from(root.children)
+      .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .flatMap(([name, node]) => {
+        const tools = renderCatalog(node)
+        const namespace =
+          node.namespace === undefined && tools.length === 0
+            ? undefined
+            : {
+                type: "namespace" as const,
+                name,
+                ...(node.namespace?.description === undefined ? {} : { description: node.namespace.description }),
+                tools,
+              }
+        if (node.tool === undefined) return namespace === undefined ? [] : [namespace]
+        if (namespace === undefined) return [node.tool]
+        return [node.tool, namespace]
+      })
+      .map((entry) => Object.freeze(entry)),
+  )
 }
 
 function runtime(

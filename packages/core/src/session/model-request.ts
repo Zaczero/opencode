@@ -215,7 +215,18 @@ export const layer = Layer.effect(
       // Remember which tool each definition object came from. Hooks rename a tool by moving
       // its definition to a new key, so after the hook we find the tool by object identity.
       const given = new Map(
-        tools.definitions.map((t) => [{ description: t.description, input: { ...t.inputSchema } }, t] as const),
+        tools.definitions.map(
+          (tool) =>
+            [
+              {
+                description: tool.description,
+                // The snapshot is shared and frozen, so a hook mutating a nested schema property would
+                // corrupt every later request. Input schemas are JSON data, so clone them outright.
+                input: JSON.parse(JSON.stringify(tool.inputSchema)),
+              },
+              tool,
+            ] as const,
+        ),
       )
       const shaped = yield* shape(
         { sessionID: session.id, model: model.ref, system: input.system, messages: input.messages, options: {} },

@@ -155,7 +155,6 @@ const layer = Layer.effect(
       }
     })
 
-    let catalog: { data: Data; names: string; value: CodeModeCatalog.Inventory } | undefined
     const state = State.create<Data, Editor>({
       name: "tool",
       initial: () => ({
@@ -204,7 +203,6 @@ const layer = Layer.effect(
         },
       }),
       notify: (value) => {
-        catalog = undefined
         return Effect.forEach(
           value.errors,
           ({ kind, name, namespace, error }) =>
@@ -218,6 +216,9 @@ const layer = Layer.effect(
       },
     })
 
+    // Keep only the latest snapshot so permission cardinality cannot grow retained state.
+    let cached: { readonly data: object; readonly permissions: string; readonly snapshot: Snapshot } | undefined
+
     return Service.of({
       transform: state.transform,
       reload: state.reload,
@@ -225,8 +226,10 @@ const layer = Layer.effect(
       snapshot: Effect.fn("Tool.snapshot")((permissions) =>
         Effect.sync(() => {
           const data = state.get()
-          const active = new Map<string, Tool.Info>()
           const rules = permissions ?? []
+          const permissionKey = rulesKey(rules)
+          if (cached?.data === data && cached.permissions === permissionKey) return cached.snapshot
+          const active = new Map<string, Tool.Info>()
           for (const [name, tool] of data.tools) {
             if (whollyDisabled(tool.options?.permission ?? name, rules)) continue
             active.set(name, tool)
@@ -243,23 +246,17 @@ const layer = Layer.effect(
                 ),
               )
             : undefined
-          const names = Array.from(codeModeTools.keys()).join("\0")
-          // Discovery is immutable for a registry revision and visible tool set. Keep request
-          // definitions/executors fresh, but share the much larger rendered catalog across steps.
-          const codeModeCatalog = !codeModeEnabled
-            ? undefined
-            : catalog?.data === data && catalog.names === names
-              ? catalog.value
-              : CodeModeTool.catalog(codeModeInventory)
-          if (codeModeCatalog) catalog = { data, names, value: codeModeCatalog }
-          return {
+          const codeModeCatalog = codeModeEnabled ? CodeModeTool.catalog(codeModeInventory) : undefined
+          // Frozen because the snapshot is now shared between requests.
+          const definitions = Object.freeze([
+            ...Array.from(direct)
+              .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+              .map(([, tool]) => Object.freeze(definition(tool))),
+            ...(codeModeTool ? [Object.freeze(definition(codeModeTool))] : []),
+          ])
+          const snapshot = Object.freeze({
             ...(codeModeCatalog === undefined ? {} : { codeModeCatalog }),
-            definitions: [
-              ...Array.from(direct)
-                .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-                .map(([, tool]) => definition(tool)),
-              ...(codeModeTool ? [definition(codeModeTool)] : []),
-            ],
+            definitions,
             execute: Effect.fnUntraced(function* (input: Parameters<Snapshot["execute"]>[0]) {
               const context: Tool.Context = {
                 sessionID: input.sessionID,
@@ -282,12 +279,18 @@ const layer = Layer.effect(
                 message: `No tool named "${name}" is currently available. Please use a tool from the available tool list.`,
               })
             }),
-          }
+          })
+          cached = { data, permissions: permissionKey, snapshot }
+          return snapshot
         }),
       ),
     })
   }),
 )
+
+// Rule order determines precedence, while callers may recreate equivalent rule objects.
+const rulesKey = (rules: Permission.Ruleset) =>
+  JSON.stringify(rules.map((rule) => [rule.action, rule.resource, rule.effect]))
 
 const whollyDisabled = (action: string, rules: Permission.Ruleset) => {
   const rule = rules.findLast((rule) => Wildcard.match(action, rule.action))

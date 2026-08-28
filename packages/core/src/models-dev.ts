@@ -279,6 +279,12 @@ const Cache = Schema.Struct({
   digest: Schema.optional(Schema.String),
   body: CatalogJson,
 })
+// The refresh gate reads only these two, and a Struct ignores the properties it does not name -- so the
+// same row decodes without parsing the catalog behind `body`, which is several megabytes of JSON.
+const CacheMeta = Schema.Struct({
+  updatedAt: Schema.Number,
+  digest: Schema.optional(Schema.String),
+})
 const defaultSource = "https://models.opencode.ai"
 
 // Bundled snapshot of https://models.opencode.ai/api.json, committed at
@@ -343,6 +349,10 @@ export const layer = (options?: Options) =>
             digest: cached.value.digest,
           }
         if (value !== undefined) yield* kv.remove(key)
+      })
+
+      const loadCacheMeta = Effect.fnUntraced(function* () {
+        return Option.getOrUndefined(Schema.decodeUnknownOption(CacheMeta)(yield* kv.get(key)))
       })
 
       const fetchApi = Effect.fn("ModelsDev.fetchApi")(function* () {
@@ -411,7 +421,7 @@ export const layer = (options?: Options) =>
         yield* lock
           .withPermit(
             Effect.gen(function* () {
-              const stored = yield* loadFromCache()
+              const stored = yield* loadCacheMeta()
               if (!force && stored && Date.now() - stored.updatedAt < Duration.toMillis(ttl)) return
               const text = yield* fetchApi()
               const digest = bodyDigest(text)

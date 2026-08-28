@@ -1,6 +1,6 @@
 export * as SessionInbox from "./inbox.js"
 
-import { and, asc, eq, or } from "drizzle-orm"
+import { and, asc, eq, or, sql } from "drizzle-orm"
 import { DateTime, Effect, Schema } from "effect"
 import {
   Compaction,
@@ -345,25 +345,41 @@ export const moveIDs = Effect.fn("SessionInbox.moveIDs")(function* (db: Database
     .pipe(Effect.orDie)
 })
 
+// A combined steer/queue ORDER BY needs a temporary sort in SQLite. Keep each indexed LIMIT 1
+// probe, but compile the stable statements once per database connection.
+const preparedPromotableQueries = new WeakMap<DatabaseService, ReturnType<typeof preparePromotableQueries>>()
+
+function preparePromotableQueries(db: DatabaseService) {
+  const probe = (delivery: Delivery) =>
+    db
+      .select()
+      .from(SessionInboxTable)
+      .where(and(eq(SessionInboxTable.session_id, sql.placeholder("sessionID")), eq(SessionInboxTable.delivery, delivery)))
+      .orderBy(asc(SessionInboxTable.enqueued_seq))
+      .limit(1)
+      .prepare()
+  return { steer: probe("steer"), queue: probe("queue") }
+}
+
+function promotableQueriesFor(db: DatabaseService) {
+  const existing = preparedPromotableQueries.get(db)
+  if (existing) return existing
+  const queries = preparePromotableQueries(db)
+  preparedPromotableQueries.set(db, queries)
+  return queries
+}
+
 export const nextPromotable = Effect.fn("SessionInbox.nextPromotable")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
   promotable: Promotable,
 ) {
-  const next = (delivery: Delivery) =>
-    db
-      .select()
-      .from(SessionInboxTable)
-      .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, delivery)))
-      .orderBy(asc(SessionInboxTable.enqueued_seq))
-      .limit(1)
-      .get()
-      .pipe(Effect.orDie)
-  const steer = yield* next("steer")
+  const queries = promotableQueriesFor(db)
+  const steer = yield* queries.steer.get({ sessionID }).pipe(Effect.orDie)
   if (steer) return fromRow(steer)
   if (promotable !== "input") return undefined
-  const queued = yield* next("queue")
-  return queued ? fromRow(queued) : undefined
+  const queue = yield* queries.queue.get({ sessionID }).pipe(Effect.orDie)
+  return queue === undefined ? undefined : fromRow(queue)
 })
 
 /** Which pending rows count: "input" means any item in either delivery mode. */

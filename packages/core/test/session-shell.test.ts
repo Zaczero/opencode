@@ -268,7 +268,11 @@ describe("Session.shell", () => {
           truncated: false,
         })
         expect(completion.payload.description).toBeUndefined()
-        expect(completion.payload.text).toContain(command)
+        expect(completion.payload.text).toContain(
+          process.platform === "win32"
+            ? "command=\"Write-Output 'user output'; [Console]::Error.WriteLine('user error'); exit "
+            : "command=\"printf 'user output\\n'; printf 'user error\\n' )&2; exit ",
+        )
         expect(completion.payload.text).toContain("user output")
         expect(completion.payload.text).toContain("user error")
         expect(completion.payload.text).toContain(`exited with code ${exit}`)

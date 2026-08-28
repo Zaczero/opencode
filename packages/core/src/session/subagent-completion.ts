@@ -1,6 +1,7 @@
 export * as SubagentCompletion from "./subagent-completion.js"
 
 import { Effect } from "effect"
+import { attribute } from "../tool/runtime.js"
 import type { Job } from "../job.js"
 import type { Session } from "../session.js"
 import type { SessionMessage } from "./message.js"
@@ -38,7 +39,7 @@ export const deliver = Effect.fnUntraced(function* (
     sessionID: recovery.parentSessionID,
     ...(input.resume === false ? { resume: false } : {}),
     description: recovery.description,
-    text: `<subagent sessionID="${recovery.childSessionID}" state="${input.status}" description="${recovery.description}">\n${text}\n</subagent>`,
+    text: `<subagent sessionID="${recovery.childSessionID}" state="${input.status}" description="${attribute(recovery.description)}">\n${text}\n</subagent>`,
     metadata: { source: "subagent", childID: recovery.childSessionID, agent: recovery.agent, state: input.status },
   })
   if (input.notificationID) yield* jobs.completeBackground(input.notificationID)

@@ -8,6 +8,7 @@ import { Config } from "../../config.js"
 import { PluginRuntime } from "../../plugin/runtime.js"
 import { Permission } from "../../permission.js"
 import { SessionSchema } from "../../session/schema.js"
+import { attribute } from "../runtime.js"
 
 export const name = "subagent"
 
@@ -110,7 +111,7 @@ export const Plugin = {
         yield* runtime.session.synthetic({
           ...(info.notificationID ? { id: info.notificationID } : {}),
           sessionID: parentID,
-          text: `<subagent sessionID="${childID}" state="${info.status}" description="${description}">\n${text}\n</subagent>`,
+          text: `<subagent sessionID="${childID}" state="${info.status}" description="${attribute(description)}">\n${text}\n</subagent>`,
           description,
           metadata: { source: "subagent", childID, agent, state: info.status },
         })

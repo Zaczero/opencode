@@ -30,6 +30,7 @@ import { SubagentTool } from "@opencode-ai/core/tool/plugin/subagent"
 import { Tool } from "@opencode-ai/core/tool"
 import { tmpdir } from "./fixture/tmpdir"
 import { tempGlobalLayer } from "./fixture/global"
+import { attribute } from "@opencode-ai/core/tool/runtime"
 import { testEffect } from "./lib/effect"
 import { executeTool, registerToolPlugin, toolIdentity } from "./lib/tool"
 
@@ -545,6 +546,13 @@ describe("SubagentTool", () => {
         }),
       ),
     ),
+  )
+
+  // The model parses these tags, so a quote in a description must not end the attribute early.
+  it.effect("escapes the completion envelope's description", () =>
+    Effect.sync(() => {
+      expect(attribute(`fix the "parser" <bug>`)).toBe("fix the 'parser' (bug)")
+    }),
   )
 
   it.live("notifies once when background work completes", () =>

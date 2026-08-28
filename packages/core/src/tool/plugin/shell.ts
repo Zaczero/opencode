@@ -15,6 +15,7 @@ import { Shell } from "../../shell.js"
 import { ShellParse } from "../../shell/parse.js"
 import { ShellSelect } from "../../shell/select.js"
 import { ToolOutput } from "../../tool-output.js"
+import { attribute } from "../runtime.js"
 
 export const name = "shell"
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000
@@ -133,7 +134,7 @@ export const Plugin = {
         yield* runtime.session.synthetic({
           ...(info.notificationID ? { id: info.notificationID } : {}),
           sessionID,
-          text: `<shell id="${id}" state="${info.status}" command="${command}">\n${text}\n</shell>`,
+          text: `<shell id="${id}" state="${info.status}" command="${attribute(command)}">\n${text}\n</shell>`,
           description: command,
           metadata: {
             source: "shell",

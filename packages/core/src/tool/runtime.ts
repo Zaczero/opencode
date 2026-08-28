@@ -255,6 +255,12 @@ const hasLocalReference = (value: unknown): boolean => {
   return Object.values(value).some(hasLocalReference)
 }
 
+/**
+ * Safe inside the double-quoted attribute of a completion envelope. The model parses these tags, so a
+ * quote or angle bracket in a title or command would end the attribute early and change what it reads.
+ */
+export const attribute = (value: string) => value.replaceAll('"', "'").replaceAll("<", "(").replaceAll(">", ")")
+
 export const normalizeContent = (value: string | ReadonlyArray<Tool.Content> | undefined, output?: unknown) => {
   if (typeof value === "string") return [{ type: "text" as const, text: value }]
   if (value !== undefined && value.length > 0) return [...value]

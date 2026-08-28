@@ -25,6 +25,7 @@ import { SessionRunnerRetry } from "./retry.js"
 import { SessionStep } from "./step.js"
 import { ToolOutput } from "../../tool-output.js"
 import { PluginSupervisor } from "../../plugin/supervisor.js"
+import { PluginHooks } from "../../plugin/hooks.js"
 import { PromptCacheDiagnostics } from "../prompt-cache-diagnostics.js"
 import { MAX_STEPS_PROMPT } from "./max-steps.js"
 
@@ -42,6 +43,7 @@ const layer = Layer.effect(
     const compaction = yield* SessionCompaction.Service
     const plugins = yield* PluginSupervisor.Service
     const title = yield* SessionTitle.Service
+    const hooks = yield* PluginHooks.Service
     const steps = yield* SessionStep.make
     const diagnostics = yield* Config.boolean("OPENCODE_PROMPT_CACHE_DIAGNOSTICS").pipe(
       Config.withDefault(false),
@@ -80,6 +82,7 @@ const layer = Layer.effect(
     }) {
       const sessionID = input.sessionID
       const history = SessionHistory.makeCache()
+      let interactive = false
       let force = input.force
       let continuing = input.continuation !== undefined
       let step = input.continuation?.step ?? 1
@@ -165,8 +168,53 @@ const layer = Layer.effect(
                 force = false
                 continue
               }
-              if (!force && !continuing && (!pending || (pending.delivery === "queue" && promotable === "steer")))
-                return DrainResult.Complete()
+              if (!force && !continuing && (!pending || (pending.delivery === "queue" && promotable === "steer"))) {
+                // Consulted at every idle boundary of the drain, not once: a continuation the model works
+                // through can leave new unfinished work behind, and only the hook knows whether it did.
+                // Bounding repetition is the hook's job -- one that always continues never lets the drain end.
+                if (!(yield* hooks.has("session", "before-complete"))) return DrainResult.Complete()
+                // Restored: a plugin hook must not run uninterruptibly, and neither must the admit.
+                const continuation = yield* restore(
+                  hooks.trigger("session", "before-complete", { sessionID, interactive }),
+                ).pipe(Effect.exit)
+                if (Exit.isFailure(continuation)) {
+                  if (Cause.hasInterrupts(continuation.cause)) return yield* Effect.failCause(continuation.cause)
+                  yield* Effect.logWarning("Session completion hook failed", continuation.cause).pipe(
+                    Effect.annotateLogs({ sessionID }),
+                  )
+                  return DrainResult.Complete()
+                }
+                const requested = continuation.value.continuation
+                if (requested === undefined) return DrainResult.Complete()
+                // Suspended: Item.make validates synchronously and throws, so constructing it outside
+                // the effect would escape Effect.exit and fail the session on a bad plugin continuation.
+                const admitted = yield* restore(
+                  Effect.suspend(() =>
+                    SessionInbox.admit(db, bus, {
+                      id: SessionMessage.ID.create(),
+                      sessionID,
+                      item: SessionInbox.Item.make({
+                        type: "synthetic",
+                        payload: {
+                          text: requested.text,
+                          description: requested.description,
+                          metadata: requested.metadata,
+                        },
+                        delivery: "steer",
+                      }),
+                    }),
+                  ),
+                ).pipe(Effect.exit)
+                if (Exit.isFailure(admitted)) {
+                  if (Cause.hasInterrupts(admitted.cause)) return yield* Effect.failCause(admitted.cause)
+                  yield* Effect.logWarning("Session completion continuation was not admitted", admitted.cause).pipe(
+                    Effect.annotateLogs({ sessionID }),
+                  )
+                  return DrainResult.Complete()
+                }
+                force = true
+                continue
+              }
               return yield* restore(
                 Effect.gen(function* () {
                   const selected = yield* prepareContext(sessionID)
@@ -192,7 +240,9 @@ const layer = Layer.effect(
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step, history)
+        const stepped = yield* runStep(next.context, step, history)
+        continuing = stepped.continuing
+        if (stepped.interactive !== undefined) interactive = stepped.interactive
         step++
         force = false
         entering = false
@@ -270,7 +320,8 @@ const layer = Layer.effect(
               : Effect.succeed(false),
           ),
         })
-        if (outcome._tag === "Completed") return outcome.needsContinuation
+        if (outcome._tag === "Completed")
+          return { continuing: outcome.needsContinuation, interactive: outcome.interactive }
         if (outcome._tag === "Retry" || outcome._tag === "Continue") {
           yield* retry({ cause: outcome.cause, error: outcome.error, assistantMessageID }).pipe(
             Pull.catchDone(() =>
@@ -337,6 +388,7 @@ export const node = makeLocationNode({
     SessionStore.node,
     SessionCompaction.node,
     PluginSupervisor.node,
+    PluginHooks.node,
     SessionTitle.node,
     Snapshot.node,
     ToolOutput.node,

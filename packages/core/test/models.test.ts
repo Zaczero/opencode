@@ -333,6 +333,22 @@ describe("ModelsDev Service", () => {
     }),
   )
 
+  // The freshness gate reads updatedAt and digest, nothing else. A body it cannot parse still satisfies
+  // it, which is the observable form of "the multi-megabyte catalog is not parsed to check a timestamp".
+  it.live("refresh() decides freshness without parsing the cached catalog", () =>
+    Effect.gen(function* () {
+      const cache = makeCache()
+      writeCacheText(cache, "{not json at all")
+      const state = yield* Ref.make(initialState)
+      yield* provided(
+        state,
+        cache,
+        ModelsDev.Service.use((service) => service.refresh()),
+      )
+      expect((yield* Ref.get(state)).calls.length).toBe(0)
+    }),
+  )
+
   it.live("get() is single-flight under concurrent calls", () =>
     Effect.gen(function* () {
       const cache = makeCache()

@@ -574,6 +574,44 @@ it.effect("keeps malformed provider-executed AI SDK input terminal", () =>
   }),
 )
 
+it.effect("preserves valid and omits malformed AI SDK stream provider metadata", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    const validMetadata = { test: { signature: "signed" } }
+    const nullMetadata = { type: "text-end" as const, id: "text" } satisfies LanguageModelV3StreamPart
+    Object.defineProperty(nullMetadata, "providerMetadata", { enumerable: true, value: null })
+    const malformedMetadata = {
+      type: "finish" as const,
+      finishReason: { unified: "stop" as const, raw: "stop" },
+      usage,
+    } satisfies LanguageModelV3StreamPart
+    Object.defineProperty(malformedMetadata, "providerMetadata", { enumerable: true, value: { test: null } })
+
+    yield* aisdk.hook.sdk((event) => {
+      event.sdk = {
+        languageModel: () =>
+          streamModel([
+            { type: "text-start", id: "text", providerMetadata: validMetadata },
+            { type: "text-delta", id: "text", delta: "Hello" },
+            nullMetadata,
+            malformedMetadata,
+          ]),
+      }
+    })
+
+    const resolved = yield* aisdk.model(model("test-ai-sdk"))
+    const response = yield* LLMClient.generate(LLM.request({ model: resolved, prompt: "Hello" })).pipe(
+      Effect.provide(client),
+    )
+
+    expect(response.events.find(LLMEvent.is.textStart)?.providerMetadata).toEqual(validMetadata)
+    expect(response.events.find(LLMEvent.is.textDelta)?.providerMetadata).toBeUndefined()
+    expect(response.events.find(LLMEvent.is.textEnd)?.providerMetadata).toBeUndefined()
+    expect(response.events.find(LLMEvent.is.stepFinish)?.providerMetadata).toBeUndefined()
+    expect(response.events.find(LLMEvent.is.finish)?.providerMetadata).toBeUndefined()
+  }),
+)
+
 const failingModel = (failure: unknown): LanguageModelV3 => ({
   specificationVersion: "v3",
   provider: "test",

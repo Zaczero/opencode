@@ -44,6 +44,7 @@ type AssistantContent = Extract<LanguageModelV3Message, { role: "assistant" }>["
 type ToolResultContent = Extract<AssistantContent[number], { type: "tool-result" }>
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+const isProviderMetadata = Schema.is(ProviderMetadata)
 
 export interface SDKEvent {
   readonly model: Info
@@ -769,7 +770,8 @@ function finishReason(value: LanguageModelV3FinishReason): FinishReason {
 }
 
 function providerMetadata(value: unknown) {
-  return Schema.is(ProviderMetadata)(value) ? value : undefined
+  if (value === undefined) return undefined
+  return isProviderMetadata(value) ? value : undefined
 }
 
 function jsonObject(input: Record<string, unknown>) {

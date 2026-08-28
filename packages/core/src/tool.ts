@@ -214,20 +214,26 @@ const layer = Layer.effect(
         ),
     })
 
+    // Keep only the latest snapshot so permission cardinality cannot grow retained state.
+    let cached: { readonly data: object; readonly permissions: string; readonly snapshot: Snapshot } | undefined
+
     return Service.of({
       transform: state.transform,
       reload: state.reload,
       snapshot: Effect.fn("Tool.snapshot")((permissions) =>
         Effect.sync(() => {
-          const active = new Map<string, Tool.Info>()
+          const data = state.get()
           const rules = permissions ?? []
-          for (const [name, tool] of state.get().tools) {
+          const permissionKey = rulesKey(rules)
+          if (cached?.data === data && cached.permissions === permissionKey) return cached.snapshot
+          const active = new Map<string, Tool.Info>()
+          for (const [name, tool] of data.tools) {
             if (whollyDisabled(tool.options?.permission ?? name, rules)) continue
             active.set(name, tool)
           }
           const direct = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode === false))
           const codeModeTools = new Map(Array.from(active).filter(([, tool]) => tool.options?.codemode !== false))
-          const namespaces = state.get().namespaces
+          const namespaces = data.namespaces
           const codeModeInventory = { tools: codeModeTools, namespaces }
           const codeModeEnabled = !whollyDisabled("execute", rules)
           const codeModeTool = codeModeEnabled
@@ -238,14 +244,16 @@ const layer = Layer.effect(
               )
             : undefined
           const codeModeCatalog = codeModeEnabled ? CodeModeTool.catalog(codeModeInventory) : undefined
-          return {
+          // Frozen because the snapshot is now shared between requests.
+          const definitions = Object.freeze([
+            ...Array.from(direct)
+              .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+              .map(([, tool]) => Object.freeze(definition(tool))),
+            ...(codeModeTool ? [Object.freeze(definition(codeModeTool))] : []),
+          ])
+          const snapshot = Object.freeze({
             ...(codeModeCatalog === undefined ? {} : { codeModeCatalog }),
-            definitions: [
-              ...Array.from(direct)
-                .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-                .map(([, tool]) => definition(tool)),
-              ...(codeModeTool ? [definition(codeModeTool)] : []),
-            ],
+            definitions,
             execute: Effect.fnUntraced(function* (input: Parameters<Snapshot["execute"]>[0]) {
               const context: Tool.Context = {
                 sessionID: input.sessionID,
@@ -266,12 +274,18 @@ const layer = Layer.effect(
               if (tool) return yield* executeTool(tool, name, event.input, context)
               return yield* new Tool.Error({ message: `Unknown tool: ${name}` })
             }),
-          }
+          })
+          cached = { data, permissions: permissionKey, snapshot }
+          return snapshot
         }),
       ),
     })
   }),
 )
+
+// Rule order determines precedence, while callers may recreate equivalent rule objects.
+const rulesKey = (rules: Permission.Ruleset) =>
+  JSON.stringify(rules.map((rule) => [rule.action, rule.resource, rule.effect]))
 
 const whollyDisabled = (action: string, rules: Permission.Ruleset) => {
   const rule = rules.findLast((rule) => Wildcard.match(action, rule.action))

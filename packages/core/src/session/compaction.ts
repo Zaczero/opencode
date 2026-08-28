@@ -407,6 +407,7 @@ export const layer = Layer.effect(
       const validSummary = hooked.prompt === prompt ? hasSummarySection : (summary: string) => summary.trim().length > 0
       const prepared = yield* input.prepare({
         kind: "compaction",
+        toolChoice: { type: "none" },
         scope: {
           session: context.session,
           agentID: Agent.ID.make("compaction"),

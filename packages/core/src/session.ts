@@ -421,7 +421,11 @@ const layer = Layer.effect(
       move: moves.move,
       compact: (input) => sessions.forSession(input.sessionID).compact(input),
       wait: (sessionID) => sessions.forSession(sessionID).wait(),
-      active: execution.active,
+      active: Effect.gen(function* () {
+        const active = new Set(yield* execution.active)
+        for (const sessionID of yield* jobs.activeSessions) active.add(sessionID)
+        return active
+      }),
       background: Effect.fn("Session.background")(function* (sessionID) {
         yield* result.get(sessionID)
         const backgrounded = yield* jobs.backgroundAll({ sessionID })

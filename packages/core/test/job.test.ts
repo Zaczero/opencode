@@ -11,6 +11,36 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Job.node, KV.node])))
 
 describe("Job", () => {
+  it.live("keeps owned work pending until its completion result is delivered", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const owner = SessionSchema.ID.make("ses_delivery_owner")
+      const exited = yield* Deferred.make<string>()
+      const job = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: owner },
+        recovery: { kind: "shell", sessionID: owner, shellID: "sh_delivery", command: "build" },
+        run: Deferred.await(exited),
+      })
+      const background = yield* jobs.background(job.id)
+      if (!background?.notificationID) return yield* Effect.die("Missing notification identity")
+      const delivered = yield* Deferred.make<boolean>()
+      const waiter = yield* jobs.awaitOwned(owner).pipe(
+        Effect.tap((waited) => Deferred.succeed(delivered, waited)),
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* Deferred.succeed(exited, "build finished")
+      yield* jobs.wait({ id: job.id })
+      expect(yield* jobs.running(owner)).toEqual([])
+      expect(yield* Deferred.isDone(delivered)).toBe(false)
+      expect(yield* jobs.activeSessions).toEqual(new Set([owner]))
+      yield* jobs.completeBackground(background.notificationID)
+      expect(yield* Fiber.join(waiter)).toBe(true)
+      expect(yield* jobs.awaitOwned(owner)).toBe(false)
+      expect(yield* jobs.activeSessions).toEqual(new Set())
+    }),
+  )
+
   it.live("tracks process-local work through explicit observation", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service
@@ -170,6 +200,38 @@ describe("Job", () => {
         info: { status: "completed", output: "done" },
       })
       expect(yield* jobs.background(job.id)).toBeUndefined()
+    }),
+  )
+
+  // A session that owns running work has not finished, however idle its own execution looks. This is what
+  // lets a subagent's completion wait for the shell it will be woken by instead of reporting ahead of it.
+  it.live("reports the jobs still running on behalf of a session", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const owner = SessionSchema.ID.make("ses_owner")
+      const other = SessionSchema.ID.make("ses_other")
+      const latch = yield* Deferred.make<void>()
+      const mine = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: owner },
+        run: Deferred.await(latch).pipe(Effect.as("done")),
+      })
+      yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: other },
+        run: Deferred.await(latch).pipe(Effect.as("done")),
+      })
+      const settled = yield* jobs.start({ type: "shell", metadata: { sessionID: owner }, run: Effect.succeed("done") })
+      yield* jobs.wait({ id: settled.id })
+
+      expect((yield* jobs.running(owner)).map((job) => job.id)).toEqual([mine.id])
+      expect(yield* jobs.running(SessionSchema.ID.make("ses_none"))).toEqual([])
+      expect(yield* jobs.activeSessions).toEqual(new Set([owner, other]))
+
+      yield* Deferred.succeed(latch, undefined)
+      yield* jobs.wait({ id: mine.id })
+      expect(yield* jobs.running(owner)).toEqual([])
+      expect(yield* jobs.activeSessions).toEqual(new Set())
     }),
   )
 

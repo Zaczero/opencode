@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
 import path from "path"
 import { pathToFileURL } from "url"
 import { eq } from "drizzle-orm"
@@ -32,6 +32,7 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Snapshot } from "@opencode/core/snapshot"
 import { Skill } from "@opencode/core/skill"
 import { tmpdirScoped } from "./fixture/tmpdir"
+import { Job } from "@opencode/core/job"
 import { testEffect } from "./lib/effect"
 
 const executionCalls: Session.ID[] = []
@@ -91,7 +92,7 @@ const locations = makeGlobalNode({
 })
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([Database.node, Bus.node, Job.node, SessionProjector.node, SessionStore.node, Session.node]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       SessionExecution.node.replace(execution),
@@ -175,6 +176,25 @@ describe("Session.prompt", () => {
       activeSessions.add(sessionID)
       expect(Array.from(yield* session.active)).toEqual([sessionID])
     }).pipe(Effect.ensuring(Effect.sync(() => activeSessions.clear()))),
+  )
+
+  it.effect("keeps a session active while it owns running background work", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const jobs = yield* Job.Service
+      const release = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID },
+        run: Deferred.await(release).pipe(Effect.as("done")),
+      })
+
+      expect(Array.from(yield* (yield* Session.Service).active)).toEqual([sessionID])
+
+      yield* Deferred.succeed(release, undefined)
+      yield* jobs.wait({ id: job.id })
+      expect(Array.from(yield* (yield* Session.Service).active)).toEqual([])
+    }),
   )
 
   it.effect("delegates execution continuation through SessionExecution", () =>

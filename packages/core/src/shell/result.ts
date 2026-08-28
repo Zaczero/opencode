@@ -48,7 +48,7 @@ export function notification(input: {
   output?: Output
 }) {
   return {
-    text: `<shell id="${input.jobID ?? input.shellID}" state="${input.state}" command="${input.command}">\n${input.text}\n</shell>`,
+    text: `<shell id="${input.jobID ?? input.shellID}" state="${input.state}" command="${attribute(input.command)}">\n${input.text}\n</shell>`,
     metadata: {
       source: "shell",
       shellID: input.shellID,
@@ -72,3 +72,4 @@ export function userNotification(result: Result) {
   })
   return { ...message, text: `The following shell command was executed by the user:\n${message.text}` }
 }
+import { attribute } from "../tool/runtime.js"

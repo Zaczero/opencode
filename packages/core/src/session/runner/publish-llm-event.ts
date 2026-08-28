@@ -10,6 +10,7 @@ import { SessionEvent } from "../event.js"
 import { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionError } from "@opencode/schema/session-error"
+import { QuestionTool } from "../../tool/plugin/question.js"
 import { Money } from "@opencode/schema/money"
 import { SessionUsage } from "../usage.js"
 import type { Tool } from "../../tool.js"
@@ -42,6 +43,8 @@ export interface StepRecord {
     readonly tokens: ReturnType<typeof SessionUsage.tokens>
   }
   readonly needsContinuation: boolean
+  /** Whether the step's last model-run tool was the interactive question; undefined when it ran none. */
+  readonly interactive?: boolean
 }
 
 /** Derives canonical model content from a provider-hosted tool result. */
@@ -84,6 +87,13 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     progress?: Tool.Metadata
   }
   const tools = new Map<string, ToolState>()
+  // Undefined when the step ran no model tools at all: that says nothing about interactivity,
+  // and the caller carries the previous step's answer forward rather than overwriting it.
+  const interactiveStep = () => {
+    let last: ToolState | undefined
+    for (const tool of tools.values()) if (!tool.providerExecuted) last = tool
+    return last === undefined ? undefined : last.name === QuestionTool.name
+  }
   const failureSnapshot = (tool: { readonly progress?: Tool.Metadata }, metadata?: Tool.Metadata) => {
     if (tool.progress === undefined) return metadata === undefined ? {} : { metadata }
     if (metadata === undefined) return { metadata: tool.progress }
@@ -598,6 +608,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         tools.values(),
         (tool) => !tool.providerExecuted && (tool.called || tool.settled),
       ),
+      interactive: interactiveStep(),
     }),
     startAssistant,
     streamed,

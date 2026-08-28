@@ -135,6 +135,18 @@ export interface SessionRetry {
   decision: SessionRetryDecision
 }
 
+export interface SessionBeforeComplete {
+  readonly sessionID: Session.ID
+  /** The session stopped after an interactive question and should not be continued automatically. */
+  readonly interactive: boolean
+  /** Core admits this into `sessionID` before publishing the execution terminal. */
+  continuation?: {
+    readonly text: string
+    readonly description?: string
+    readonly metadata?: Record<string, unknown>
+  }
+}
+
 export interface SessionHooks {
   readonly prompt: SessionPrompt
   readonly context: SessionContext
@@ -148,6 +160,7 @@ export interface SessionHooks {
   readonly "experimental.ws.send": SessionWebSocketSend
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
+  readonly "before-complete": SessionBeforeComplete
 }
 
 export type SessionDomain = Pick<

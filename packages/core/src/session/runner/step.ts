@@ -30,7 +30,7 @@ import { createLLMEventPublisher } from "./publish-llm-event.js"
 import { SessionRunnerRetry } from "./retry.js"
 
 export type Outcome = Data.TaggedEnum<{
-  Completed: { readonly needsContinuation: boolean }
+  Completed: { readonly needsContinuation: boolean; readonly interactive?: boolean }
   Retry: { readonly error: SessionError.Error; readonly decision: SessionRunnerRetry.Decision }
   Continue: {
     readonly error: SessionError.Error
@@ -263,6 +263,7 @@ export const make = Effect.gen(function* () {
         if (record.failure) return yield* new StepFailedError({ error: record.failure })
         return Outcome.Completed({
           needsContinuation: input.prepared.request.toolChoice?.type !== "none" && record.needsContinuation,
+          interactive: record.interactive,
         })
       }),
     )

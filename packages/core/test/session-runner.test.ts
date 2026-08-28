@@ -6053,4 +6053,54 @@ describe("SessionRunnerLLM", () => {
       expect(defect.message).toBe("Tool input delta before start: call-1")
     }),
   )
+
+  it.effect("does not call the model when selected input is cancelled during preparation", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const runner = yield* SessionRunner.Service
+      const reached = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const input = yield* session.prompt({
+        sessionID,
+        text: "Cancel during preparation",
+        delivery: "queue",
+        resume: false,
+      })
+      systemLoadHook = Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+
+      const running = yield* runner
+        .drain({ sessionID, force: true, promotable: "steer" })
+        .pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.await(reached)
+      yield* session.cancelInbox({ sessionID, inboxID: input.id })
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(running)
+
+      expect(requests).toHaveLength(0)
+      expect(yield* SessionInbox.find((yield* Database.Service).db, input.id)).toBeUndefined()
+    }),
+  )
+
+  it.effect("does not call the model when selected input is reclassified during preparation", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const runner = yield* SessionRunner.Service
+      const reached = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const steer = yield* admit(session, "Queue during preparation")
+      systemLoadHook = Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+
+      const running = yield* runner
+        .drain({ sessionID, force: false, promotable: "steer" })
+        .pipe(Effect.forkChild({ startImmediately: true }))
+      yield* Deferred.await(reached)
+      yield* session.queueInbox({ sessionID, inboxID: steer.id })
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(running)
+
+      expect(requests).toHaveLength(0)
+      expect(yield* SessionInbox.find((yield* Database.Service).db, steer.id)).toMatchObject({ delivery: "queue" })
+    }),
+  )
+
 })

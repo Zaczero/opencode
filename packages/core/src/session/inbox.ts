@@ -1,6 +1,6 @@
 export * as SessionInbox from "./inbox.js"
 
-import { and, asc, eq, or } from "drizzle-orm"
+import { and, asc, eq, or, sql } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
 import {
@@ -404,6 +404,29 @@ export const moveIDs = Effect.fn("SessionInbox.moveIDs")(function* (db: Database
     .pipe(Effect.orDie)
 })
 
+// Steers need the control boundary for compaction ordering; queued input needs only its first row.
+const preparedPromotableQueries = new WeakMap<DatabaseService, ReturnType<typeof preparePromotableQueries>>()
+
+function preparePromotableQueries(db: DatabaseService) {
+  const probe = (delivery: Delivery) =>
+    db
+      .select()
+      .from(SessionInboxTable)
+      .where(
+        and(eq(SessionInboxTable.session_id, sql.placeholder("sessionID")), eq(SessionInboxTable.delivery, delivery)),
+      )
+      .orderBy(asc(SessionInboxTable.enqueued_seq))
+  return { steer: probe("steer").prepare(), queue: probe("queue").limit(1).prepare() }
+}
+
+function promotableQueriesFor(db: DatabaseService) {
+  const existing = preparedPromotableQueries.get(db)
+  if (existing) return existing
+  const queries = preparePromotableQueries(db)
+  preparedPromotableQueries.set(db, queries)
+  return queries
+}
+
 export const nextPromotable = Effect.fn("SessionInbox.nextPromotable")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
@@ -412,15 +435,9 @@ export const nextPromotable = Effect.fn("SessionInbox.nextPromotable")(function*
   const steer = (yield* pendingSteers(db, sessionID))[0]
   if (steer) return fromRow(steer)
   if (promotable !== "input") return undefined
-  const queued = yield* db
-    .select()
-    .from(SessionInboxTable)
-    .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "queue")))
-    .orderBy(asc(SessionInboxTable.enqueued_seq))
-    .limit(1)
-    .get()
-    .pipe(Effect.orDie)
-  return queued ? fromRow(queued) : undefined
+  const queries = promotableQueriesFor(db)
+  const queue = yield* queries.queue.get({ sessionID }).pipe(Effect.orDie)
+  return queue === undefined ? undefined : fromRow(queue)
 })
 
 /** Which pending rows count: "input" means any item in either delivery mode. */
@@ -531,12 +548,8 @@ export const promote = Effect.fn("SessionInbox.promote")(function* (
 })
 
 const pendingSteers = (db: DatabaseService, sessionID: SessionSchema.ID) =>
-  db
-    .select()
-    .from(SessionInboxTable)
-    .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "steer")))
-    .orderBy(asc(SessionInboxTable.enqueued_seq))
-    .all()
+  promotableQueriesFor(db)
+    .steer.all({ sessionID })
     .pipe(
       Effect.orDie,
       Effect.map((rows) => {

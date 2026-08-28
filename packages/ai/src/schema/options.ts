@@ -57,6 +57,11 @@ export namespace HttpOptions {
 }
 
 export const mergeHttpOptions = (...items: ReadonlyArray<HttpOptions | undefined>): HttpOptions | undefined => {
+  // Reuse a lone operand rather than rebuilding it, but only when the merge would have kept it:
+  // an options object whose fields all normalize away merges to undefined, and the fast path must agree.
+  const only = items.find((item) => item !== undefined)
+  if (only !== undefined && (only.body || only.headers || only.query) && items.every((item) => item === undefined || item === only))
+    return only
   const body = mergeJsonRecords(...items.map((item) => item?.body))
   const headers = mergeStringRecords(...items.map((item) => item?.headers))
   const query = mergeStringRecords(...items.map((item) => item?.query))
@@ -101,6 +106,13 @@ const latestGeneration = <Key extends keyof GenerationOptionsFields>(
 ) => items.findLast((item) => item?.[key] !== undefined)?.[key]
 
 export const mergeGenerationOptions = (...items: ReadonlyArray<GenerationOptionsInput | undefined>) => {
+  const only = items.find((item) => item !== undefined)
+  if (
+    only instanceof GenerationOptions &&
+    Object.values(only).some((value) => value !== undefined) &&
+    items.every((item) => item === undefined || item === only)
+  )
+    return only
   const result = new GenerationOptions({
     maxTokens: latestGeneration(items, "maxTokens"),
     temperature: latestGeneration(items, "temperature"),

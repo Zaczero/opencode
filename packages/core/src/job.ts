@@ -130,6 +130,14 @@ export interface Interface {
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
+  /**
+   * Jobs still running on behalf of a session -- any background work it owns and will react to, whether
+   * a shell or another subagent. A session with one of these outstanding has not finished, however idle
+   * its own execution looks.
+   */
+  readonly running: (sessionID: SessionSchema.ID) => Effect.Effect<Info[]>
+  /** Sessions with work that is still running on their behalf. */
+  readonly activeSessions: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
@@ -377,6 +385,24 @@ export const make = Effect.gen(function* () {
     return result.map((item) => item.info)
   })
 
+  const running: Interface["running"] = Effect.fn("Job.running")(function* (sessionID) {
+    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const found: Info[] = []
+    for (const job of jobs.values())
+      if (job.info.status === "running" && job.info.metadata?.["sessionID"] === sessionID) found.push(snapshot(job))
+    return found
+  })
+
+  const activeSessions: Interface["activeSessions"] = Effect.gen(function* () {
+    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const sessions = new Set<SessionSchema.ID>()
+    for (const job of jobs.values()) {
+      const sessionID = job.info.metadata?.["sessionID"]
+      if (job.info.status === "running" && typeof sessionID === "string") sessions.add(SessionSchema.ID.make(sessionID))
+    }
+    return sessions
+  }).pipe(Effect.withSpan("Job.activeSessions"))
+
   const cancel: Interface["cancel"] = Effect.fn("Job.cancel")(function* (id) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
@@ -425,6 +451,8 @@ export const make = Effect.gen(function* () {
     block,
     background,
     backgroundAll,
+    running,
+    activeSessions,
     cancel,
     pendingBackground,
     completeBackground,

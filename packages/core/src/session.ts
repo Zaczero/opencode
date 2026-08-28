@@ -892,7 +892,11 @@ const layer = Layer.effect(
         yield* result.get(sessionID)
         yield* execution.awaitIdle(sessionID)
       }),
-      active: execution.active,
+      active: Effect.gen(function* () {
+        const active = new Set(yield* execution.active)
+        for (const sessionID of yield* jobs.activeSessions) active.add(sessionID)
+        return active
+      }),
       background: Effect.fn("Session.background")(function* (sessionID) {
         yield* result.get(sessionID)
         const backgrounded = yield* jobs.backgroundAll({ sessionID })

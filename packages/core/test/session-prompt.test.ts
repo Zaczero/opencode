@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
 import { mkdtemp, rm } from "fs/promises"
 import { tmpdir } from "os"
 import path from "path"
@@ -30,6 +30,7 @@ import { Image } from "@opencode-ai/core/image"
 import { PluginSupervisor } from "@opencode-ai/core/plugin/supervisor"
 import { PluginHooks } from "@opencode-ai/core/plugin/hooks"
 import { Snapshot } from "@opencode-ai/core/snapshot"
+import { Job } from "@opencode-ai/core/job"
 import { testEffect } from "./lib/effect"
 
 const executionCalls: Session.ID[] = []
@@ -92,7 +93,7 @@ const locations = Layer.effect(
 )
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([Database.node, Bus.node, Job.node, SessionProjector.node, SessionStore.node, Session.node]),
     [
       [Bus.node, Bus.configured({ persist: true })],
       [SessionExecution.node, execution],
@@ -175,6 +176,25 @@ describe("Session.prompt", () => {
       activeSessions.add(sessionID)
       expect(Array.from(yield* (yield* Session.Service).active)).toEqual([sessionID])
     }).pipe(Effect.ensuring(Effect.sync(() => activeSessions.clear()))),
+  )
+
+  it.effect("keeps a session active while it owns running background work", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const jobs = yield* Job.Service
+      const release = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID },
+        run: Deferred.await(release).pipe(Effect.as("done")),
+      })
+
+      expect(Array.from(yield* (yield* Session.Service).active)).toEqual([sessionID])
+
+      yield* Deferred.succeed(release, undefined)
+      yield* jobs.wait({ id: job.id })
+      expect(Array.from(yield* (yield* Session.Service).active)).toEqual([])
+    }),
   )
 
   it.effect("delegates execution continuation through SessionExecution", () =>

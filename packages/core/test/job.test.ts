@@ -83,6 +83,38 @@ describe("Job", () => {
     }),
   )
 
+  // A session that owns running work has not finished, however idle its own execution looks. This is what
+  // lets a subagent's completion wait for the shell it will be woken by instead of reporting ahead of it.
+  it.live("reports the jobs still running on behalf of a session", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const owner = SessionSchema.ID.make("ses_owner")
+      const other = SessionSchema.ID.make("ses_other")
+      const latch = yield* Deferred.make<void>()
+      const mine = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: owner },
+        run: Deferred.await(latch).pipe(Effect.as("done")),
+      })
+      yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: other },
+        run: Deferred.await(latch).pipe(Effect.as("done")),
+      })
+      const settled = yield* jobs.start({ type: "shell", metadata: { sessionID: owner }, run: Effect.succeed("done") })
+      yield* jobs.wait({ id: settled.id })
+
+      expect((yield* jobs.running(owner)).map((job) => job.id)).toEqual([mine.id])
+      expect(yield* jobs.running(SessionSchema.ID.make("ses_none"))).toEqual([])
+      expect(yield* jobs.activeSessions).toEqual(new Set([owner, other]))
+
+      yield* Deferred.succeed(latch, undefined)
+      yield* jobs.wait({ id: mine.id })
+      expect(yield* jobs.running(owner)).toEqual([])
+      expect(yield* jobs.activeSessions).toEqual(new Set())
+    }),
+  )
+
   it.live("returns backgrounded from a blocking wait when background wins", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service

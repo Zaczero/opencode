@@ -28,7 +28,10 @@ export interface Interface {
     | "wait"
     | "context"
   >
-  readonly job: Pick<Job.Interface, "start" | "wait" | "block" | "background" | "cancel" | "completeBackground">
+  readonly job: Pick<
+    Job.Interface,
+    "start" | "wait" | "block" | "background" | "running" | "cancel" | "completeBackground"
+  >
   readonly location: {
     readonly agent: {
       readonly list: (
@@ -86,6 +89,7 @@ export const layerWithCell = (cell: Cell) =>
         wait: (input) => require(cell, (runtime) => runtime.job.wait(input)),
         block: (input) => require(cell, (runtime) => runtime.job.block(input)),
         background: (id) => require(cell, (runtime) => runtime.job.background(id)),
+        running: (sessionID) => require(cell, (runtime) => runtime.job.running(sessionID)),
         cancel: (id) => require(cell, (runtime) => runtime.job.cancel(id)),
         completeBackground: (notificationID) =>
           require(cell, (runtime) => runtime.job.completeBackground(notificationID)),

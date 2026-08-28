@@ -89,11 +89,21 @@ export const Plugin = {
       if (notifications.has(key)) return
       notifications.add(key)
       yield* Effect.gen(function* () {
-        const info = (yield* runtime.job.wait({ id: childID })).info
+        let info = (yield* runtime.job.wait({ id: childID })).info
+        // A child that started background work and ended its turn is idle, not finished: the shell it is
+        // waiting on will wake it into another turn. Reporting here would tell the parent the subagent
+        // completed while it still had work in flight, and the turn that follows would go unreported.
+        while (info && info.status !== "running") {
+          const outstanding = yield* runtime.job.running(childID)
+          if (outstanding.length === 0) break
+          yield* Effect.forEach(outstanding, (job) => runtime.job.wait({ id: job.id }), { discard: true })
+          yield* runtime.session.wait(childID)
+          info = (yield* runtime.job.wait({ id: childID })).info
+        }
         if (!info || info.status === "running") return
         const text =
           info.status === "completed"
-            ? (info.output ?? NO_TEXT)
+            ? yield* latestAssistantText(childID)
             : info.status === "error"
               ? (info.error ?? "Subagent failed")
               : "Subagent cancelled"
@@ -236,7 +246,10 @@ export const Plugin = {
                 id: child.id,
                 type: name,
                 title: input.description,
-                metadata: {},
+                // Records who owns this work, so the dispatching session counts as still running while it
+                // is outstanding -- the same rule a background shell already obeys, and the one that keeps
+                // a nested subagent from being reported done ahead of the child it spawned.
+                metadata: { sessionID: context.sessionID, childID: child.id },
                 recovery: {
                   kind: "subagent",
                   parentSessionID: context.sessionID,

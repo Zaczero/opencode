@@ -408,6 +408,37 @@ describe("fromPromise", () => {
     }),
   )
 
+  it.effect("forwards session compaction prompt hooks", () =>
+    Effect.gen(function* () {
+      const plugin = yield* Plugin.Service
+      const hooks = yield* PluginHooks.Service
+      const host = yield* PluginHost.make(plugin)
+      const seen: string[] = []
+      yield* PluginPromise.fromPromise(
+        define({
+          id: "promise-session-compaction",
+          setup: async (ctx) => {
+            await ctx.session.hook("compaction", (event) => {
+              seen.push(event.reason)
+              event.prompt += "\nPromise tail"
+            })
+          },
+        }),
+      ).effect(host)
+
+      const event: SessionHooks["compaction"] = {
+        sessionID: Session.ID.make("ses_promise_session_compaction"),
+        reason: "auto",
+        context: ["history"],
+        prompt: "summary prompt",
+      }
+      yield* hooks.trigger("session", "compaction", event)
+
+      expect(seen).toEqual(["auto"])
+      expect(event.prompt).toBe("summary prompt\nPromise tail")
+    }),
+  )
+
   it.effect("adapts promise session HTTP request and response hooks", () =>
     Effect.gen(function* () {
       const plugin = yield* Plugin.Service

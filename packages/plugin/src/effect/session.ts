@@ -37,6 +37,14 @@ export interface SessionModelRequest {
   headers: Record<string, string>
 }
 
+export interface SessionCompaction {
+  readonly sessionID: Session.ID
+  readonly reason: "auto" | "manual"
+  readonly previousSummary?: string
+  readonly context: ReadonlyArray<string>
+  prompt: string
+}
+
 export interface SessionHttpRequest {
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
@@ -68,6 +76,7 @@ export interface SessionHooks {
   readonly prompt: SessionPrompt
   readonly context: SessionContext
   readonly "model.request": SessionModelRequest
+  readonly compaction: SessionCompaction
   readonly "http.request": SessionHttpRequest
   readonly "http.response": SessionHttpResponse
   readonly "before-complete": SessionBeforeComplete

@@ -5,6 +5,7 @@ import type { StreamOptions } from "@opencode-ai/ai/route"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Bus } from "../bus.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { llmClient } from "../effect/app-node-platform.js"
 import { SessionEvent } from "./event.js"
@@ -66,6 +67,7 @@ export type Draft = {
 }
 
 type Dependencies = {
+  readonly hooks: PluginHooks.Interface
   readonly bus: Bus.Interface
   readonly llm: {
     readonly stream: (request: LLMRequest, options?: StreamOptions) => Stream.Stream<LLMEvent, AIError>
@@ -95,6 +97,8 @@ type Plan = {
   readonly session: SessionSchema.Info
   readonly resolved: SessionRunnerModel.Resolved
   readonly reason: SessionMessage.Compaction["reason"]
+  readonly previousSummary?: string
+  readonly context: readonly string[]
   readonly prompt: string
   readonly recent: string
   readonly inputID?: SessionMessage.ID
@@ -231,11 +235,12 @@ const planContent = (messages: readonly SessionMessage.Info[], tokens: number) =
   )
   const previousRecent = previousSummary?.recent ?? ""
   const summarizeRecent = !previousRecent && !selected.head
+  const context = summarizeRecent ? [selected.recent] : [previousRecent, selected.head].filter(Boolean)
   return {
-    prompt: buildPrompt({
-      previousSummary: previousSummary?.summary,
-      context: summarizeRecent ? [selected.recent] : [previousRecent, selected.head].filter(Boolean),
-    }),
+    // Surfaced alongside the built prompt so the compaction hook can rebuild it rather than parse it.
+    previousSummary: previousSummary?.summary,
+    context,
+    prompt: buildPrompt({ previousSummary: previousSummary?.summary, context }),
     recent: summarizeRecent ? "" : selected.recent,
   }
 }
@@ -282,9 +287,18 @@ const make = (dependencies: Dependencies) => {
           })
         : Effect.void,
     )
+    // The summarizer request is excluded from the session context hook, so this is the only seam a
+    // plugin has to shape the compaction prompt.
+    const hooked = yield* dependencies.hooks.trigger("session", "compaction", {
+      sessionID: plan.session.id,
+      reason: plan.reason,
+      previousSummary: plan.previousSummary,
+      context: [...plan.context],
+      prompt: plan.prompt,
+    })
     const prepared = yield* plan.prepare({
       scope: { session: plan.session, agentID: Agent.ID.make("compaction"), model: plan.resolved },
-      transcript: { system: [], messages: [Message.user(plan.prompt)] },
+      transcript: { system: [], messages: [Message.user(hooked.prompt)] },
       contextHooks: false,
     })
     yield* dependencies.llm.stream(prepared.request, prepared.options).pipe(
@@ -428,12 +442,13 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const bus = yield* Bus.Service
     const llm = yield* LLMClient.Service
-    return make({ bus, llm })
+    const hooks = yield* PluginHooks.Service
+    return make({ bus, llm, hooks })
   }),
 )
 
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, llmClient],
+  deps: [Bus.node, llmClient, PluginHooks.node],
 })

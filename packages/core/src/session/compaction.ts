@@ -15,6 +15,7 @@ import { Agent } from "@opencode-ai/schema/agent"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Bus } from "../bus.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { llmClient } from "../effect/app-node-platform.js"
 import { SessionEvent } from "./event.js"
@@ -336,6 +337,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const bus = yield* Bus.Service
     const llm = yield* LLMClient.Service
+    const hooks = yield* PluginHooks.Service
 
     const state = State.create<Settings, Editor>({
       name: "session-compaction",
@@ -395,6 +397,14 @@ export const layer = Layer.effect(
         initial: context.initial,
         messages: history.messages,
       })
+      const prompt = buildPrompt(history.messages.some((message) => message.type === "compaction" && message.status === "completed"))
+      const hooked = yield* hooks.trigger("session", "compaction", {
+        sessionID: context.session.id,
+        reason: input.reason,
+        context: [],
+        prompt,
+      })
+      const validSummary = hooked.prompt === prompt ? hasSummarySection : (summary: string) => summary.trim().length > 0
       const prepared = yield* input.prepare({
         kind: "compaction",
         scope: {
@@ -409,11 +419,7 @@ export const layer = Layer.effect(
           messages: [
             ...transcript.messages,
             ...(input.instructionUpdate ? [Message.system(input.instructionUpdate)] : []),
-            Message.user(
-              buildPrompt(
-                history.messages.some((message) => message.type === "compaction" && message.status === "completed"),
-              ),
-            ),
+            Message.user(hooked.prompt),
           ],
         },
       })
@@ -516,11 +522,11 @@ export const layer = Layer.effect(
             ),
           ),
         )
-        if (failure || hasSummarySection(chunks.join(""))) break
+        if (failure || validSummary(chunks.join(""))) break
       }
       yield* recordUsage
       const summary = chunks.join("")
-      if (failure || !hasSummarySection(summary)) {
+      if (failure || !validSummary(summary)) {
         const error = failure ?? {
           type: "compaction.failed" as const,
           message: summary.trim()
@@ -604,5 +610,5 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, llmClient],
+  deps: [Bus.node, llmClient, PluginHooks.node],
 })

@@ -84,6 +84,7 @@ const it = testEffect(
       SessionProjector.node,
       SessionStore.node,
       SessionCompaction.node,
+      PluginHooks.node,
       SessionModelRequest.node,
     ]),
     [Bus.node.replace(Bus.configured({ persist: true })), llmClient.replace(client)],
@@ -489,5 +490,59 @@ it.effect("forked session compaction reuses the fork root prompt cache key", () 
 
     expect(requests).toHaveLength(1)
     expect(requests[0]?.promptCacheKey).toBe(rootID)
+  }),
+)
+
+it.effect("compaction hook rewrites the summarizer prompt", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    const hooks = yield* PluginHooks.Service
+    const store = yield* SessionStore.Service
+    const modelRequests = yield* SessionModelRequest.Service
+    const sessionID = Session.ID.make("ses_compaction_hook")
+    const seen: Array<{ readonly reason: string; readonly context: readonly string[] }> = []
+    yield* hooks.register("session", "compaction", (event) =>
+      Effect.sync(() => {
+        seen.push({ reason: event.reason, context: [...event.context] })
+        event.prompt = "rewritten by the compaction hook"
+      }),
+    )
+    const session = yield* insertSession(sessionID)
+    expect(
+      yield* compaction.compactManual({
+        resolveModel: () => Effect.succeed(resolved),
+        session,
+        resolveContext: () =>
+          Effect.succeed(
+            loaded(session, [
+              {
+                id: SessionMessage.ID.make("msg_hook_history"),
+                type: "user",
+                text: "Hook rewrite should replace this prompt entirely.",
+                time: { created: DateTime.makeUnsafe(0) },
+              },
+            ]),
+          ),
+        prepare: modelRequests.prepare,
+        messages: [
+          {
+            id: SessionMessage.ID.create(),
+            type: "user" as const,
+            text: "Hook rewrite should replace this prompt entirely.",
+            time: { created: DateTime.makeUnsafe(0) },
+          },
+        ],
+        inputID: SessionMessage.ID.make("msg_compaction_hook"),
+      }),
+    ).toEqual({ status: "completed" })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.reason).toBe("manual")
+    expect(seen[0]?.context).toEqual([])
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(requests[0]?.messages)).toContain("rewritten by the compaction hook")
+    expect(JSON.stringify(requests[0]?.messages)).toContain("Hook rewrite should replace this prompt entirely.")
+    expect(yield* store.context(sessionID)).toMatchObject([{ type: "compaction", reason: "manual" }])
   }),
 )

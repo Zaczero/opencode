@@ -919,6 +919,7 @@ const layer = Layer.effect(
       }),
       active: Effect.gen(function* () {
         const active = new Set(yield* execution.active)
+        for (const sessionID of activeShells) active.add(sessionID)
         for (const sessionID of yield* jobs.activeSessions) active.add(sessionID)
         return active
       }),

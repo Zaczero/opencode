@@ -627,6 +627,50 @@ test("preserves a live compaction while a child transcript hydrates", async () =
   }
 })
 
+test("refreshes background session activity from synthetic lifecycle messages", async () => {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      if (!request.url.endsWith("/api/session/active")) throw new Error(`Unexpected request: ${request.url}`)
+      return Response.json({ data: { ses_background: { type: "running" } } })
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: "/project",
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    dispose,
+  }))
+
+  try {
+    const event: OpenCodeEvent = {
+      id: "evt_backgrounded",
+      created: 1,
+      type: "session.synthetic",
+      durable: { aggregateID: "ses_background", seq: 1, version: 1 },
+      data: {
+        sessionID: "ses_background",
+        text: "Backgrounded work is still unfinished.",
+      },
+    }
+    listeners.forEach((listener) => listener({ name: event.type, details: event }))
+
+    await wait(() => setup.data.session.status("ses_background") === "running")
+  } finally {
+    setup.dispose()
+  }
+})
+
 async function wait(check: () => boolean) {
   const started = Date.now()
   while (!check()) {

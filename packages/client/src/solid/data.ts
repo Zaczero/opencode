@@ -215,10 +215,30 @@ export function createData(config: CreateDataInput) {
   )
   const messageIndex = new Map<string, Map<string, number>>()
   const messageVersion = new Map<string, number>()
+  let activeVersion = 0
+  let activeRequest = 0
   const sync = createSync()
 
   function setSessionActive(sessionID: string, status: DataSessionStatus) {
+    activeVersion++
     setStore("session", "active", sessionID, status)
+  }
+
+  function syncSessionActive() {
+    const version = activeVersion
+    const request = ++activeRequest
+    void api()
+      .session.active()
+      .then((active) => {
+        if (request !== activeRequest) return
+        if (version !== activeVersion) return syncSessionActive()
+        setStore(
+          "session",
+          "active",
+          reconcile(Object.fromEntries(Object.keys(active).map((sessionID) => [sessionID, "running" as const]))),
+        )
+      })
+      .catch(() => undefined)
   }
 
   function removePending(sessionID: string, inboxID?: string) {
@@ -508,16 +528,7 @@ export function createData(config: CreateDataInput) {
   function handleEvent(event: OpenCodeEvent) {
     switch (event.type) {
       case "server.connected":
-        void api()
-          .session.active()
-          .then((active) => {
-            setStore(
-              "session",
-              "active",
-              reconcile(Object.fromEntries(Object.keys(active).map((sessionID) => [sessionID, "running" as const]))),
-            )
-          })
-          .catch(() => undefined)
+        syncSessionActive()
         void api()
           .location.get({ location: locationQuery(defaultLocation()) })
           .then((location) => {
@@ -695,6 +706,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.synthetic":
+        syncSessionActive()
         message.update(event.data.sessionID, (draft, index) => {
           message.append(draft, index, {
             id: messageIDFromEvent(event.id),
@@ -885,6 +897,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.tool.success":
+        syncSessionActive()
         message.update(event.data.sessionID, (draft, index) => {
           const match = message.latestTool(
             message.assistant(draft, index, event.data.assistantMessageID),

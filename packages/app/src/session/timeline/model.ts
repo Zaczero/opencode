@@ -1,6 +1,7 @@
 import { createMemo, createResource, type Accessor } from "solid-js"
 import type { SessionMessageInfo } from "@opencode-ai/client/promise"
 import { useData } from "@/runtime/server/current"
+import { useServerSDK } from "@/runtime/server/client"
 import type { SessionModel } from "../model"
 
 const leadingTurnPageDelay = 200
@@ -13,10 +14,11 @@ export {
 
 export function createTimelineModel(input: { session: Pick<SessionModel, "identity" | "history"> }) {
   const data = useData()
+  const serverSDK = useServerSDK()
   const prepared = new Set<string>()
 
   const [resource] = createResource(
-    () => input.session.identity.sessionID(),
+    () => (serverSDK.connection.status() === "connected" ? input.session.identity.sessionID() : undefined),
     async (id) => {
       if (!id) return
       const key = input.session.identity.sessionKey()

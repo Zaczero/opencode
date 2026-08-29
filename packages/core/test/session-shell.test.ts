@@ -106,6 +106,22 @@ const launch = Effect.fn(function* (fixture: Effect.Success<typeof setup>, name:
 })
 
 describe("Session.shell", () => {
+  it.live("retains background activity until every user shell has completed", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup
+      const first = yield* launch(fixture, "first")
+      const second = yield* launch(fixture, "second")
+      expect(yield* fixture.session.active).toContain(fixture.created.id)
+      expect(yield* fixture.session.activeExecuting).not.toContain(fixture.created.id)
+      yield* first.release
+      yield* Fiber.join(first.caller)
+      expect(yield* fixture.session.active).toContain(fixture.created.id)
+      yield* second.release
+      yield* Fiber.join(second.caller)
+      expect(yield* fixture.session.active).not.toContain(fixture.created.id)
+    }),
+  )
+
   it.live("runs shells concurrently with an active model and waits for each shell's own completion", () =>
     Effect.gen(function* () {
       const fixture = yield* setup

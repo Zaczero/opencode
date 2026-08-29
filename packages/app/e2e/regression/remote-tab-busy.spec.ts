@@ -73,7 +73,7 @@ async function mockServers(page: Page) {
               sandboxes: [],
             },
             sessions: current === sessionB ? [current, childB] : [current],
-            sessionStatus: current === sessionB ? { [childB.id]: { type: "running" } } : {},
+            sessionStatus: current === sessionB ? { [childB.id]: { type: "execution" } } : {},
             provider: { all: [], connected: [], default: {} },
             pageMessages: () => ({ items: [] }),
           }),

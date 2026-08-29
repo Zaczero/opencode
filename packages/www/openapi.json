@@ -18949,7 +18949,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["running"]
+            "enum": ["execution", "background"]
           }
         },
         "required": ["type"],

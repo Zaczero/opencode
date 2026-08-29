@@ -103,7 +103,7 @@ export const SessionsCursor = Schema.String.pipe(
 export type SessionsCursor = typeof SessionsCursor.Type
 
 const SessionActive = Schema.Struct({
-  type: Schema.Literal("running"),
+  type: Schema.Literals(["execution", "background"]),
 }).annotate({ identifier: "SessionActive" })
 
 const BooleanFromString = Schema.Literals(["true", "false"]).pipe(

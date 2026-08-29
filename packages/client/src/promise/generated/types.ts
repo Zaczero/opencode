@@ -138,7 +138,7 @@ export type SessionMessageCompactionRunning = {
   recent: string
 }
 
-export type SessionActive = { type: "running" }
+export type SessionActive = { type: "execution" | "background" }
 
 export type SessionInboxDelivery = "steer" | "queue"
 

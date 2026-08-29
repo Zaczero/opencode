@@ -152,6 +152,7 @@ type State = {
   closed: boolean
   initial: boolean
   rootActive: boolean
+  sessionActive: boolean
   /** Bumped on every root execution lifecycle event; guards paints against stale acks. */
   executionEpoch: number
   buffered?: ReplayBuffer
@@ -497,6 +498,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     closed: false,
     initial: true,
     rootActive: false,
+    sessionActive: false,
     executionEpoch: 0,
     errors: new Set(),
     pending: new Map(),
@@ -538,7 +540,21 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
   })
   syncActivity = () => {
     const shellRunning = [...state.shellStarted].some((id) => !state.shellEnded.has(id))
-    input.onSessionActivity?.(state.rootActive || shellRunning || subagents.busy())
+    input.onSessionActivity?.(state.sessionActive || state.rootActive || shellRunning || subagents.busy())
+  }
+  let activityRequest = 0
+  const refreshActivity = (attempt: Attempt) => {
+    const request = ++activityRequest
+    const epoch = state.executionEpoch
+    void attempt.client.session
+      .active({ signal: attempt.signal })
+      .then((active) => {
+        if (!current(attempt) || request !== activityRequest) return
+        if (epoch !== state.executionEpoch) return refreshActivity(attempt)
+        state.sessionActive = input.sessionID in active
+        syncActivity()
+      })
+      .catch(() => {})
   }
   controller.signal.addEventListener("abort", () => subagents.close(), { once: true })
 
@@ -931,7 +947,8 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     state.globalForms = globals
       ? globals.data.filter((form) => form.sessionID === "global").map((form) => globalForm(form, globals.location))
       : []
-    state.rootActive = input.sessionID in active
+    state.rootActive = active[input.sessionID]?.type === "execution"
+    state.sessionActive = input.sessionID in active
     syncBlockers()
     await subagents.hydrate({
       sdk: client,
@@ -1343,6 +1360,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     if (event.type === "session.execution.started") {
       state.executionEpoch++
       state.rootActive = true
+      state.sessionActive = true
       write([], { phase: "running" })
       return
     }
@@ -1375,6 +1393,25 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     apply(attempt, event)
+    if (
+      sessionID(event) === input.sessionID &&
+      event.type === "session.execution.interrupted" &&
+      event.data.reason === "shutdown"
+    ) {
+      state.sessionActive = false
+    } else if (
+      sessionID(event) === input.sessionID &&
+      (event.type === "session.execution.succeeded" ||
+        event.type === "session.execution.failed" ||
+        event.type === "session.execution.interrupted" ||
+        event.type === "session.shell.ended" ||
+        (event.type === "session.inbox.enqueued" &&
+          event.data.item.type === "synthetic" &&
+          (event.data.item.payload.metadata?.source === "shell" ||
+            event.data.item.payload.metadata?.source === "subagent")))
+    ) {
+      refreshActivity(attempt)
+    }
     syncActivity()
   }
 
@@ -1460,7 +1497,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
           if (!current(attempt)) throw new Error("Event stream disconnected")
           state.initial = false
           do {
-            for (const event of buffered.splice(0)) apply(attempt, event)
+            for (const event of buffered.splice(0)) receive(attempt, event)
             await Promise.race([subagents.ready(), consume])
             await Promise.race([settleCatalog(attempt), consume])
           } while (buffered.length > 0)
@@ -1666,7 +1703,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
         }
       }
     } finally {
-      for (const event of buffered) apply(attempt, event)
+      for (const event of buffered) receive(attempt, event)
     }
     if (reset) await input.footer.idle()
     if (failure) throw failure

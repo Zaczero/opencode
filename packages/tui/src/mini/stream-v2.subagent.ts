@@ -45,6 +45,7 @@ const FAMILY_LIST_LIMIT = 100
 const FAMILY_DISCOVERY_CONCURRENCY = 8
 const BLOCKER_RETRY_INITIAL_MS = 50
 const BLOCKER_RETRY_MAX_MS = 2_000
+const DETAIL_PAINT_INTERVAL_MS = 100
 const FALLBACK_LABEL = "Subagent"
 
 type V2Event = EventSubscribeOutput
@@ -225,6 +226,7 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
   let selected: string | undefined
   let blockerEpoch = 0
   let closed = false
+  let detailPaint: ReturnType<typeof setTimeout> | undefined
   const active = (signal = input.signal) => !closed && !input.signal.aborted && !signal.aborted
   const admitChild = (sessionID: string): ChildState | undefined => {
     const existing = children.get(sessionID)
@@ -268,7 +270,11 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
   }
 
   const notifyDetail = (child: ChildState) => {
-    if (child.sessionID === selected) input.emit()
+    if (child.sessionID !== selected || detailPaint) return
+    detailPaint = setTimeout(() => {
+      detailPaint = undefined
+      if (!closed) input.emit()
+    }, DETAIL_PAINT_INTERVAL_MS)
   }
 
   const setFrame = (child: ChildState, key: string, commit: StreamCommit) => {
@@ -1132,6 +1138,7 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
     },
     close() {
       closed = true
+      if (detailPaint) clearTimeout(detailPaint)
       resetBlockerHydration()
       for (const job of discoveryQueue.splice(0)) {
         if (discoveryJobs.get(job.sessionID) === job) discoveryJobs.delete(job.sessionID)

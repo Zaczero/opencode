@@ -34,6 +34,8 @@ Examples: `session-recovery`, `fix-scroll-state`, `regenerate-sdk`.
 
 ## Commits and PR Titles
 
+- On the personal fork, fold fixes into the commit owning the feature or improvement and force-push with an explicit lease. Keep one commit per distinct feature or improvement group rather than appending follow-up fix commits.
+
 Use conventional commit-style messages and PR titles: `type(scope): summary`.
 
 Valid types are `feat`, `fix`, `docs`, `chore`, `refactor`, and `test`. Scopes are optional; use the affected package or area when helpful, e.g. `core`, `opencode`, `tui`, `app`, `desktop`, `sdk`, or `plugin`.

@@ -103,6 +103,7 @@ type Store = {
     // session ID in that family, including the key itself once its info arrives.
     family: Record<string, string[]>
     active: Record<string, DataSessionStatus>
+    executing: Record<string, boolean>
     message: Record<string, SessionMessageInfo[]>
     messageCursor: Record<string, string | undefined>
     messageLoading: Record<string, boolean>
@@ -194,6 +195,7 @@ export function createData(config: CreateDataInput) {
       info: {},
       family: {},
       active: {},
+      executing: {},
       message: {},
       messageCursor: {},
       messageLoading: {},
@@ -224,6 +226,11 @@ export function createData(config: CreateDataInput) {
     setStore("session", "active", sessionID, status)
   }
 
+  function setSessionExecuting(sessionID: string, executing: boolean) {
+    activeVersion++
+    setStore("session", "executing", sessionID, executing)
+  }
+
   function syncSessionActive() {
     const version = activeVersion
     const request = ++activeRequest
@@ -236,6 +243,30 @@ export function createData(config: CreateDataInput) {
           "session",
           "active",
           reconcile(Object.fromEntries(Object.keys(active).map((sessionID) => [sessionID, "running" as const]))),
+        )
+        setStore(
+          "session",
+          "executing",
+          reconcile(
+            Object.fromEntries(
+              Object.entries(active).flatMap(([sessionID, entry]) =>
+                entry.type === "execution" ? [[sessionID, true] as const] : [],
+              ),
+            ),
+          ),
+        )
+        const missing = Object.keys(active).filter((sessionID) => store.session.info[sessionID] === undefined)
+        if (missing.length === 0) return
+        void Promise.all(missing.map((sessionID) => api().session.get({ sessionID }).catch(() => undefined))).then(
+          (sessions) => {
+            for (const session of sessions) {
+              if (!session) continue
+              if (store.session.active[session.id] !== "running") continue
+              setStore("session", "info", session.id, reconcile(session))
+              sync.complete(`session:${session.id}`)
+              registerSession(session.id)
+            }
+          },
         )
       })
       .catch(() => undefined)
@@ -680,6 +711,10 @@ export function createData(config: CreateDataInput) {
         return
       }
       case "session.inbox.enqueued": {
+        if (
+          event.data.item.type === "synthetic" &&
+          (event.data.item.payload.metadata?.source === "shell" || event.data.item.payload.metadata?.source === "subagent")
+        ) syncSessionActive()
         outbox.delete(event.data.inboxID)
         admitLocal({
           id: event.data.inboxID,
@@ -719,6 +754,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.shell.started":
+        setSessionActive(event.data.sessionID, "running")
         message.update(event.data.sessionID, (draft, index) => {
           message.append(draft, index, {
             id: messageIDFromEvent(event.id),
@@ -733,6 +769,8 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.shell.ended":
+        activeVersion++
+        syncSessionActive()
         message.update(event.data.sessionID, (draft) => {
           const match = message.shell(draft, event.data.shell.id)
           if (!match) return
@@ -973,6 +1011,7 @@ export function createData(config: CreateDataInput) {
         return
       case "session.execution.started":
         setSessionActive(event.data.sessionID, "running")
+        setSessionExecuting(event.data.sessionID, true)
         return
       case "session.compaction.started":
         if (event.data.inputID) removePending(event.data.sessionID, event.data.inputID)
@@ -991,12 +1030,18 @@ export function createData(config: CreateDataInput) {
       case "session.execution.succeeded":
       case "session.execution.failed":
       case "session.execution.interrupted":
-        setSessionActive(event.data.sessionID, "idle")
+        setSessionExecuting(event.data.sessionID, false)
         message.update(event.data.sessionID, (draft) => {
           const currentAssistant = message.activeAssistant(draft)
           if (currentAssistant) currentAssistant.retry = undefined
         })
-        if (event.type === "session.execution.interrupted" && event.data.reason === "shutdown") return
+        if (event.type === "session.execution.interrupted" && event.data.reason === "shutdown") {
+          setSessionActive(event.data.sessionID, "idle")
+          return
+        }
+        // Execution ended, but shells and jobs may still own activity. Keep the last activity state until
+        // the authoritative snapshot arrives rather than flashing idle at every foreground completion.
+        syncSessionActive()
         // An event can overtake the first read; queue a revalidation when that read is still active.
         if (!store.session.info[event.data.sessionID] && !sync.has(`session:${event.data.sessionID}`)) return
         result.session.invalidate(event.data.sessionID)
@@ -1254,6 +1299,9 @@ export function createData(config: CreateDataInput) {
       },
       status(sessionID: string) {
         return store.session.active[sessionID] ?? "idle"
+      },
+      executing(sessionID: string) {
+        return store.session.executing[sessionID] ?? false
       },
       input: {
         list(sessionID: string) {

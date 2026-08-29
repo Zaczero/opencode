@@ -216,6 +216,7 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => data.session.status(props.sessionID ?? ""))
+  const executing = createMemo(() => data.session.executing(props.sessionID ?? ""))
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = Keymap.use()
@@ -519,7 +520,7 @@ export function Prompt(props: PromptProps) {
         name: "session.interrupt",
         category: "Session",
         palette: undefined,
-        enabled: status() === "running",
+        enabled: executing(),
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -551,7 +552,7 @@ export function Prompt(props: PromptProps) {
         name: "session.background",
         category: "Session",
         palette: undefined,
-        enabled: status() === "running",
+        enabled: executing(),
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -1968,7 +1969,7 @@ export function Prompt(props: PromptProps) {
                 }}
               >
                 <Switch>
-                  <Match when={status() === "running"}>
+                  <Match when={executing()}>
                     <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
                       <box marginLeft={1}>
                         <Show when={config.animations ?? true} fallback={<text fg={theme.text.subdued}>[⋯]</text>}>

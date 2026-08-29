@@ -310,6 +310,7 @@ export interface Interface {
   ) => Effect.Effect<SessionInbox.Compaction, NotFoundError | CompactionConflictError>
   readonly wait: (id: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
+  readonly activeExecuting: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly background: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID, options?: { readonly continue?: boolean }) => Effect.Effect<boolean>
@@ -923,6 +924,7 @@ const layer = Layer.effect(
         for (const sessionID of yield* jobs.activeSessions) active.add(sessionID)
         return active
       }),
+      activeExecuting: execution.active,
       background: Effect.fn("Session.background")(function* (sessionID) {
         yield* result.get(sessionID)
         const backgrounded = yield* jobs.backgroundAll({ sessionID })

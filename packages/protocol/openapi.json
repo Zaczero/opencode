@@ -977,6 +977,16 @@
               }
             }
           },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          },
           "409": {
             "description": "ConflictError",
             "content": {
@@ -988,7 +998,7 @@
             }
           }
         },
-        "description": "Import a projected session transcript at the requested location.",
+        "description": "Import a projected session transcript at the requested location. If parentID is supplied, the parent session must already exist; import parents before children.",
         "summary": "Import session",
         "requestBody": {
           "content": {
@@ -10074,6 +10084,70 @@
         }
       }
     },
+    "/api/experimental/persistent-pty/handoff": {
+      "post": {
+        "tags": ["persistentPty"],
+        "operationId": "server.experimental.persistentPty.handoff",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "handoff": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/PersistentPty.Handoff"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["handoff"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ServiceUnavailableError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableErrorEncoded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/experimental/persistent-pty/{ptyID}": {
       "get": {
         "tags": ["persistentPty"],
@@ -14983,6 +15057,9 @@
           "name": {
             "type": "string"
           },
+          "metadata": {
+            "type": "object"
+          },
           "methods": {
             "type": "array",
             "items": {
@@ -15493,6 +15570,9 @@
           "reasoningField": {
             "$ref": "#/components/schemas/Model.ReasoningField"
           },
+          "requireReasoning": {
+            "type": "boolean"
+          },
           "maxTokensField": {
             "$ref": "#/components/schemas/Model.MaxTokensField"
           },
@@ -15870,7 +15950,34 @@
             "additionalProperties": false
           }
         },
-        "required": ["command", "args", "cwd", "title", "env"],
+        "required": ["args", "title", "env"],
+        "additionalProperties": false
+      },
+      "PersistentPty.Handoff": {
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          },
+          "instanceID": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          }
+        },
+        "required": ["directory", "instanceID", "ticket", "expiresAt"],
         "additionalProperties": false
       },
       "PersistentPty.Info": {
@@ -16222,7 +16329,7 @@
       },
       "Project.Vcs": {
         "type": "string",
-        "enum": ["git", "hg"]
+        "pattern": "^[a-z][a-z0-9._-]*$"
       },
       "ProjectNotFoundErrorEncoded": {
         "type": "object",
@@ -17038,6 +17145,9 @@
             "type": "object",
             "properties": {
               "created": {
+                "type": "number"
+              },
+              "streamed": {
                 "type": "number"
               },
               "completed": {
@@ -17877,7 +17987,7 @@
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["running"]
+            "enum": ["execution", "background"]
           }
         },
         "required": ["type"],

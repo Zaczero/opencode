@@ -375,7 +375,7 @@ async function mockServers(
     if (url.pathname === "/api/session")
       return json(route, { data: sessions.map((session) => currentSession(session)), cursor: {} })
     if (url.pathname === "/api/session/active")
-      return json(route, { data: Object.fromEntries(sessions.map((session) => [session.id, { type: "running" }])) })
+      return json(route, { data: Object.fromEntries(sessions.map((session) => [session.id, { type: "execution" }])) })
     const currentSessionInfo = sessions.find((session) => url.pathname === `/api/session/${session.id}`)
     if (currentSessionInfo) {
       options.sessionGets?.push(currentSessionInfo.id)

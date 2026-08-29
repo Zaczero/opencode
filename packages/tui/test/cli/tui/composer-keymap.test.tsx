@@ -37,7 +37,7 @@ async function renderComposer(
   let route!: ReturnType<typeof useRoute>
   const calls = createFetch((url, request) => {
     if (url.pathname === "/api/session/active")
-      return json({ data: { "child-a": { type: "running" }, "child-b": { type: "running" } } })
+      return json({ data: { "child-a": { type: "execution" }, "child-b": { type: "execution" } } })
     const sessionID = url.pathname.match(/^\/api\/session\/([^/]+)$/)?.[1]
     if (sessionID && sessionID in sessions) return json({ data: sessions[sessionID as keyof typeof sessions] })
     const interruptID = url.pathname.match(/^\/api\/session\/([^/]+)\/interrupt$/)?.[1]

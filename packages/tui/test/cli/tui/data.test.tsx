@@ -747,7 +747,7 @@ test("reconnects the event stream and resyncs active data", async () => {
     }
     if (url.pathname === "/api/session/active") {
       requests.active++
-      if (requests.active === 1) return json({ data: { "session-stale": { type: "running" } } })
+      if (requests.active === 1) return json({ data: { "session-stale": { type: "execution" } } })
       return new Promise<Response>((resolve) => {
         resolveActive = resolve
       })
@@ -819,7 +819,7 @@ test("reconnects the event stream and resyncs active data", async () => {
     expect(client.connection.error()).toBe("Event stream disconnected")
 
     await wait(() => requests.active === 2 && client.connection.status() === "connected", 4000)
-    resolveActive(json({ data: { "session-new": { type: "running" } } }))
+    resolveActive(json({ data: { "session-new": { type: "execution" } } }))
     void data.session.message.sync("session-stale")
 
     await wait(() => data.location.model.list()?.[0]?.id === "model-2", 4000)
@@ -1193,11 +1193,56 @@ test("distinguishes initial connection from reconnection", async () => {
   }
 })
 
+test("hydrates a background child outside the family page without reporting an interruptible execution", async () => {
+  const events = createEventStream()
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/session/active") return json({ data: { "session-job": { type: "background" } } })
+    if (url.pathname === "/api/session/session-job")
+      return json({
+        data: {
+          id: "session-job",
+          parentID: "session-root",
+          projectID: "proj_test",
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: 0, updated: 0 },
+          location: { directory },
+        },
+      })
+  }, events)
+  let data!: ReturnType<typeof useData>
+
+  function Probe() {
+    data = useData()
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => data.session.status("session-job") === "running")
+    await wait(() => data.session.family("session-root").includes("session-job"))
+    expect(data.session.executing("session-job")).toBe(false)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("tracks session status from active sessions and execution events", async () => {
   const events = createEventStream()
   let settled = false
   const calls = createFetch((url) => {
-    if (url.pathname === "/api/session/active") return json({ data: { "session-active": { type: "running" } } })
+    if (url.pathname === "/api/session/active") return json({ data: { "session-active": { type: "execution" } } })
     if (url.pathname === "/api/session/session-live")
       return json({
         data: {

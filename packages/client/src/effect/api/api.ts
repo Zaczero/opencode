@@ -199,7 +199,7 @@ export type SessionExportInput = { readonly sessionID: Session.ID; readonly sani
 export type SessionExportOutput = { readonly info: Session.Info; readonly messages: ReadonlyArray<SessionMessage.Info> }
 export type SessionExportOperation<E = never> = (input: SessionExportInput) => Effect.Effect<SessionExportOutput, E>
 
-export type SessionActiveOutput = { readonly [x: Session.ID]: { readonly type: "running" } }
+export type SessionActiveOutput = { readonly [x: Session.ID]: { readonly type: "execution" | "background" } }
 export type SessionActiveOperation<E = never> = () => Effect.Effect<SessionActiveOutput, E>
 
 export type SessionGetInput = { readonly sessionID: Session.ID }

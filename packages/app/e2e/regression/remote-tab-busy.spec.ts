@@ -60,7 +60,7 @@ async function mockServers(page: Page) {
     if (url.pathname === "/api/event") return sse(route)
     if (url.pathname === "/api/health") return json(route, { pid: 1 })
     if (url.pathname === "/api/session/active")
-      return json(route, { data: url.origin === serverB ? { [sessionB.id]: { type: "running" } } : {} })
+      return json(route, { data: url.origin === serverB ? { [sessionB.id]: { type: "execution" } } : {} })
     if (url.pathname === "/api/session") return json(route, { data: [currentSession(current)], cursor: {} })
     if (url.pathname === `/api/session/${current.id}`) return json(route, { data: currentSession(current) })
     if (url.pathname === `/api/session/${current.id}/message`) return json(route, { data: [], cursor: {} })

@@ -382,7 +382,7 @@ function mockHandlers(config: MockServerConfig, state: { cursors: Map<string, st
           return Effect.succeed({
             data: Object.fromEntries(
               Object.entries(statuses).flatMap(([id, status]) =>
-                status.type === "idle" ? [] : [[id, { type: "running" }]],
+                status.type === "idle" ? [] : [[id, { type: "execution" }]],
               ),
             ),
           })

@@ -249,6 +249,7 @@ export function createData(config: CreateDataInput) {
     Object.values(store.session.info).toSorted((a, b) => b.time.updated - a.time.updated),
   )
   const messageIndex = new Map<string, Map<string, number>>()
+  const messageVersion = new Map<string, number>()
   const sync = createSync()
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
 
@@ -414,6 +415,7 @@ export function createData(config: CreateDataInput) {
 
   const message = {
     update(sessionID: string, fn: (messages: SessionMessageInfo[], index: Map<string, number>) => void) {
+      messageVersion.set(sessionID, (messageVersion.get(sessionID) ?? 0) + 1)
       setStore(
         "session",
         "message",
@@ -560,6 +562,7 @@ export function createData(config: CreateDataInput) {
     activeUpdates?.set(sessionID, undefined)
     store.session.pending[sessionID]?.forEach((item) => outbox.delete(item.id))
     messageIndex.delete(sessionID)
+    messageVersion.delete(sessionID)
     sync.invalidate(`session:${sessionID}`)
     sync.invalidate(`session.family:${sessionID}`)
     sync.invalidate(`session.pending:${sessionID}`)
@@ -1571,6 +1574,7 @@ export function createData(config: CreateDataInput) {
         },
         sync(sessionID: string) {
           return sync.run(`session.message:${sessionID}`, async () => {
+            const version = messageVersion.get(sessionID) ?? 0
             const response = await api().message.list({ sessionID, limit: messagePageLimit, order: "desc" })
             const fetched = response.data.toReversed()
             // Same protection as the pending sync: a re-fetch racing an
@@ -1581,10 +1585,19 @@ export function createData(config: CreateDataInput) {
                 item.type === "user" || item.type === "synthetic" ? [item.id] : [],
               ),
             )
-            const local = (store.session.message[sessionID] ?? []).filter(
-              (item) => !ids.has(item.id) && (outbox.has(item.id) || admitted.has(item.id)),
-            )
-            const messages = local.length === 0 ? fetched : [...fetched, ...local]
+            const current = store.session.message[sessionID] ?? []
+            const changed = version !== (messageVersion.get(sessionID) ?? 0)
+            const active = message.activeAssistant(current)
+            // A snapshot that predates live events cannot replace their local projection.
+            const local = changed
+              ? current
+              : current.filter(
+                  (item) =>
+                    (!ids.has(item.id) && (outbox.has(item.id) || admitted.has(item.id) || item.id === active?.id)) ||
+                    item.id === active?.id,
+                )
+            const messages = fetched.map((item) => local.find((candidate) => candidate.id === item.id) ?? item)
+            for (const item of local) if (!ids.has(item.id)) messages.push(item)
             messageIndex.set(sessionID, new Map(messages.map((message, index) => [message.id, index])))
             setStore("session", "message", sessionID, reconcile(messages))
             setStore("session", "messageCursor", sessionID, response.cursor.next ?? undefined)

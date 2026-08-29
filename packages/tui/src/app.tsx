@@ -600,7 +600,15 @@ function App(props: { pair?: DialogPairCredentials }) {
   const terminalSession = createMemo(() => (route.data.type === "session" ? data.session.get(route.data.sessionID) : undefined))
   const terminalBusy = createMemo(() => {
     const session = terminalSession()
-    return session ? data.session.family(session.id).some((id) => data.session.status(id) === "running") : false
+    return session
+      ? data.session
+          .family(session.id)
+          .some(
+            (id) =>
+              data.session.status(id) === "running" ||
+              data.session.message.list(id).some((message) => message.type === "shell" && message.status === "running"),
+          )
+      : false
   })
   createEffect(() => {
     if (!terminalBusy()) {

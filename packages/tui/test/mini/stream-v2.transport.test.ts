@@ -145,7 +145,7 @@ function eventForm(info: FormInfo): Extract<RunV2Event, { type: "form.created" }
 
 function sdk(input: {
   streams: ReturnType<typeof feed>[]
-  active?: () => Record<string, { type: "running" }>
+  active?: () => Record<string, { type: "execution" | "background" }>
   messages?: Record<string, SessionMessages>
   sessions?: Array<{ id: string; parentID?: string; title?: string; agent?: string; time: { updated: number } }>
   forms?: Record<string, FormInfo[]>
@@ -237,7 +237,7 @@ describe("V2 mini transport", () => {
     const admitted = defer()
     const client = sdk({
       streams: [events],
-      active: () => ({ ses_1: { type: "running" } }),
+      active: () => ({ ses_1: { type: "execution" } }),
       messages: { ses_1: [] },
       pending: { ses_1: inbox },
       wait: () => idle.promise,
@@ -515,7 +515,7 @@ describe("V2 mini transport", () => {
     const transport = await createSessionTransport({
       sdk: sdk({
         streams: [events],
-        active: () => ({ ses_1: { type: "running" } }),
+        active: () => ({ ses_1: { type: "execution" } }),
         messages: {
           ses_1: [compaction("running", "")],
         },
@@ -571,6 +571,156 @@ describe("V2 mini transport", () => {
     while (titles.length === 0) await Bun.sleep(0)
     expect(titles).toEqual(["Greeting"])
     await transport.close()
+  })
+
+  test("reports model and shell activity for the terminal title", async () => {
+    const events = feed()
+    events.push(connected())
+    const activity: boolean[] = []
+    const transport = await createSessionTransport({
+      sdk: sdk({ streams: [events] }),
+      sessionID: "ses_1",
+      thinking: false,
+      footer: footer().api,
+      onSessionActivity: (working) => activity.push(working),
+    })
+
+    events.push({
+      id: "evt_execution_started",
+      created: 1,
+      type: "session.execution.started",
+      durable: durable("ses_1", 1),
+      data: { sessionID: "ses_1" },
+    })
+    events.push({
+      id: "evt_execution_succeeded",
+      created: 2,
+      type: "session.execution.succeeded",
+      durable: durable("ses_1", 2),
+      data: { sessionID: "ses_1" },
+    })
+    events.push({
+      id: "evt_shell_started",
+      created: 3,
+      type: "session.shell.started",
+      durable: durable("ses_1", 3),
+      data: {
+        sessionID: "ses_1",
+        shell: {
+          id: "sh_working",
+          status: "running",
+          command: "sleep 1",
+          cwd: "/tmp",
+          shell: "/bin/sh",
+          file: "/tmp/working",
+          metadata: {},
+          time: { started: 3 },
+        },
+      },
+    })
+    events.push({
+      id: "evt_shell_ended",
+      created: 4,
+      type: "session.shell.ended",
+      durable: durable("ses_1", 4),
+      data: {
+        sessionID: "ses_1",
+        shell: {
+          id: "sh_working",
+          status: "exited",
+          command: "sleep 1",
+          cwd: "/tmp",
+          shell: "/bin/sh",
+          file: "/tmp/working",
+          exit: 0,
+          metadata: {},
+          time: { started: 3, completed: 4 },
+        },
+        output: { output: "", cursor: 0, size: 0, truncated: false },
+      },
+    })
+
+    while (activity.filter(Boolean).length < 2 || activity.at(-1) !== false) await Bun.sleep(0)
+    expect(activity).toContain(true)
+    expect(activity.at(-1)).toBe(false)
+    await transport.close()
+  })
+
+  test("reports session activity for a background job without arming the interrupt hint", async () => {
+    const events = feed()
+    events.push(connected())
+    const activity: boolean[] = []
+    const ui = footer()
+    const transport = await createSessionTransport({
+      sdk: sdk({ streams: [events], active: () => ({ ses_1: { type: "background" } }) }),
+      sessionID: "ses_1",
+      thinking: false,
+      footer: ui.api,
+      onSessionActivity: (working) => activity.push(working),
+    })
+
+    while (activity.length === 0) await Bun.sleep(0)
+    expect(activity).toContain(true)
+    expect(ui.events).not.toContainEqual({
+      type: "stream.patch",
+      patch: { phase: "running", status: "assistant responding" },
+    })
+    await transport.close()
+  })
+
+  test("keeps title activity after an agent backgrounds a shell and clears it after completion", async () => {
+    const events = feed()
+    events.push(connected())
+    const activity: boolean[] = []
+    let active: Record<string, { type: "execution" | "background" }> = {}
+    const transport = await createSessionTransport({
+      sdk: sdk({ streams: [events], active: () => active }),
+      sessionID: "ses_1",
+      thinking: false,
+      footer: footer().api,
+      onSessionActivity: (working) => activity.push(working),
+    })
+    try {
+      events.push({
+        id: "evt_start",
+        created: 1,
+        type: "session.execution.started",
+        durable: durable("ses_1", 1),
+        data: { sessionID: "ses_1" },
+      })
+      while (activity.at(-1) !== true) await Bun.sleep(0)
+      const start = activity.length
+      active = { ses_1: { type: "background" } }
+      events.push({
+        id: "evt_end",
+        created: 2,
+        type: "session.execution.succeeded",
+        durable: durable("ses_1", 2),
+        data: { sessionID: "ses_1" },
+      })
+      while (activity.length === start) await Bun.sleep(0)
+      expect(activity.slice(start)).not.toContain(false)
+      active = {}
+      events.push({
+        id: "evt_finished",
+        created: 3,
+        type: "session.inbox.enqueued",
+        durable: durable("ses_1", 3),
+        data: {
+          sessionID: "ses_1",
+          inboxID: "msg_shell_done",
+          item: {
+            type: "synthetic",
+            delivery: "steer",
+            payload: { text: "Command exited", metadata: { source: "shell", state: "completed" } },
+          },
+        },
+      })
+      while (activity.at(-1) !== false) await Bun.sleep(0)
+      expect(activity.at(-1)).toBe(false)
+    } finally {
+      await transport.close()
+    }
   })
 
   test("preserves numeric footer tokens, context percentage, and cost-only usage", async () => {
@@ -1630,8 +1780,8 @@ describe("V2 mini transport", () => {
     const client = sdk({
       streams: [first, second],
       active: () => {
-        const active: Record<string, { type: "running" }> = {}
-        if (running) active.ses_1 = { type: "running" }
+        const active: Record<string, { type: "execution" }> = {}
+        if (running) active.ses_1 = { type: "execution" }
         return active
       },
       wait: () => idle.promise,
@@ -1714,8 +1864,8 @@ describe("V2 mini transport", () => {
       streams: [first, second],
       wait: () => idle.promise,
       active: () => {
-        const active: Record<string, { type: "running" }> = {}
-        if (running) active.ses_1 = { type: "running" }
+        const active: Record<string, { type: "execution" }> = {}
+        if (running) active.ses_1 = { type: "execution" }
         return active
       },
     })
@@ -4302,7 +4452,11 @@ describe("V2 mini transport", () => {
         delta: "still running",
       },
     })
-    while (!states().at(-1)?.details.ses_child?.commits.some((item) => item.text === "still running"))
+    while (
+      !states()
+        .at(-1)
+        ?.details.ses_child?.commits.some((item) => item.text === "still running")
+    )
       await Bun.sleep(0)
 
     first.close()

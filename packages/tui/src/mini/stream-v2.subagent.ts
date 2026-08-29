@@ -145,6 +145,7 @@ export type SubagentTracker = {
   ready(): Promise<void>
   select(sdk: OpenCodeClient, sessionID: string | undefined): void
   snapshot(): FooterSubagentState
+  busy(): boolean
   settleForm(sessionID: string, formID: string): void
   close(): void
 }
@@ -1128,6 +1129,9 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
         permissions: [...children.values()].flatMap((item) => item.permissions),
         forms: [...children.values()].flatMap((item) => item.forms),
       }
+    },
+    busy() {
+      return [...children.values()].some((child) => child.status === "running")
     },
     settleForm(sessionID, formID) {
       const child = children.get(sessionID)

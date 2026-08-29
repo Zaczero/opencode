@@ -111,6 +111,7 @@ type Store = {
     // session ID in that family, including the key itself once its info arrives.
     family: Record<string, string[]>
     active: Record<string, DataSessionStatus>
+    executing: Record<string, boolean>
     message: Record<string, SessionMessageInfo[]>
     messageCursor: Record<string, string | undefined>
     messageLoading: Record<string, boolean>
@@ -231,6 +232,7 @@ export function createData(config: CreateDataInput) {
       info: {},
       family: {},
       active: {},
+      executing: {},
       message: {},
       messageCursor: {},
       messageLoading: {},
@@ -253,13 +255,88 @@ export function createData(config: CreateDataInput) {
   const messageVersion = new Map<string, number>()
   // Message version at the session's last settlement; while unchanged, a snapshot is authoritative.
   const settledVersion = new Map<string, number>()
-  const sync = createSync()
+  let activeRequest: { controller: AbortController; started: boolean; again: boolean } | undefined
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
   const pendingUpdates = new Map<string, Map<string, SessionInboxInfo | SessionInbox.Delivery | undefined>>()
+  let executingUpdates: Map<string, boolean> | undefined
+  const sync = createSync()
+  onCleanup(() => {
+    activeRequest?.controller.abort()
+    activeRequest = undefined
+    activeUpdates = undefined
+    executingUpdates = undefined
+  })
 
   function setSessionActive(sessionID: string, status: DataSessionStatus) {
     activeUpdates?.set(sessionID, status)
     setStore("session", "active", sessionID, status)
+  }
+
+  function setSessionExecuting(sessionID: string, executing: boolean) {
+    executingUpdates?.set(sessionID, executing)
+    setStore("session", "executing", sessionID, executing)
+  }
+
+  function syncSessionActive(reconnect = false) {
+    if (reconnect) {
+      activeRequest?.controller.abort()
+      activeRequest = undefined
+    }
+    if (disposed) return
+    if (activeRequest) {
+      if (activeRequest.started) activeRequest.again = true
+      return
+    }
+    const request = { controller: new AbortController(), started: false, again: false }
+    activeRequest = request
+    // The connection delivers event batches synchronously; start one read after the batch.
+    queueMicrotask(() => {
+      if (disposed || activeRequest !== request) return
+      request.started = true
+      const updates = new Map<string, DataSessionStatus | undefined>()
+      const executions = new Map<string, boolean>()
+      activeUpdates = updates
+      executingUpdates = executions
+      void api()
+        .session.active({ signal: request.controller.signal })
+        .then((active) => {
+          if (request !== activeRequest || request.again) return
+          const statuses = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
+          const executing = new Map(Object.entries(active).map(([id, entry]) => [id, entry.type === "execution"]))
+          updates.forEach((status, id) => (status === undefined ? statuses.delete(id) : statuses.set(id, status)))
+          executions.forEach((value, id) => executing.set(id, value))
+          activeUpdates = undefined
+          executingUpdates = undefined
+          setStore("session", "active", reconcile(Object.fromEntries(statuses)))
+          setStore("session", "executing", reconcile(Object.fromEntries(executing)))
+          const missing = [...statuses.keys()].filter((sessionID) => store.session.info[sessionID] === undefined)
+          if (missing.length === 0) return
+          void Promise.all(
+            missing.map((sessionID) =>
+              api()
+                .session.get({ sessionID })
+                .catch(() => undefined),
+            ),
+          ).then((sessions) => {
+            if (disposed || request.controller.signal.aborted) return
+            for (const session of sessions) {
+              if (!session) continue
+              if (store.session.active[session.id] !== "running") continue
+              setStore("session", "info", session.id, reconcile(session))
+              sync.complete(`session:${session.id}`)
+              registerSession(session.id)
+            }
+          })
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (activeRequest !== request) return
+          activeRequest = undefined
+          activeUpdates = undefined
+          executingUpdates = undefined
+          if (request.again) syncSessionActive()
+        })
+    })
   }
 
   function removePending(sessionID: string, inboxID?: string) {
@@ -566,6 +643,7 @@ export function createData(config: CreateDataInput) {
 
   function removeSession(sessionID: string) {
     activeUpdates?.set(sessionID, undefined)
+    executingUpdates?.set(sessionID, false)
     store.session.pending[sessionID]?.forEach((item) => outbox.delete(item.id))
     messageIndex.delete(sessionID)
     messageVersion.delete(sessionID)
@@ -599,26 +677,7 @@ export function createData(config: CreateDataInput) {
   function handleEvent(event: OpenCodeEvent) {
     switch (event.type) {
       case "server.connected": {
-        const updates = new Map<string, DataSessionStatus | undefined>()
-        activeUpdates = updates
-        refresh(() =>
-          api()
-            .session.active()
-            .then((active) => {
-              if (activeUpdates !== updates) return
-              // Lifecycle events received during hydration supersede the snapshot.
-              const snapshot = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
-              updates.forEach((status, id) => {
-                if (status === undefined) return snapshot.delete(id)
-                snapshot.set(id, status)
-              })
-              activeUpdates = undefined
-              setStore("session", "active", reconcile(Object.fromEntries(snapshot)))
-            })
-            .catch(() => {
-              if (activeUpdates === updates) activeUpdates = undefined
-            }),
-        )
+        syncSessionActive(true)
         refresh(() =>
           api()
             .location.get({ location: locationQuery(defaultLocation()) })
@@ -777,6 +836,12 @@ export function createData(config: CreateDataInput) {
         return
       }
       case "session.inbox.enqueued": {
+        if (
+          event.data.item.type === "synthetic" &&
+          (event.data.item.payload.metadata?.source === "shell" ||
+            event.data.item.payload.metadata?.source === "subagent")
+        )
+          syncSessionActive()
         outbox.delete(event.data.inboxID)
         const item = {
           id: event.data.inboxID,
@@ -809,6 +874,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.synthetic":
+        syncSessionActive()
         message.insert(event.data.sessionID, {
           id: messageIDFromEvent(event.id),
           type: "synthetic",
@@ -819,6 +885,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.shell.started":
+        setSessionActive(event.data.sessionID, "running")
         message.insert(event.data.sessionID, {
           id: messageIDFromEvent(event.id),
           type: "shell",
@@ -832,6 +899,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.shell.ended":
+        syncSessionActive()
         message.update(event.data.sessionID, (draft) => {
           const match = message.shell(draft, event.data.shell.id)
           if (!match) return
@@ -957,6 +1025,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.tool.success":
+        syncSessionActive()
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           if (tool.state.status !== "running") return
           tool.state = {
@@ -1014,6 +1083,7 @@ export function createData(config: CreateDataInput) {
         return
       case "session.execution.started":
         setSessionActive(event.data.sessionID, "running")
+        setSessionExecuting(event.data.sessionID, true)
         return
       case "session.compaction.started":
         if (event.data.inputID) removePending(event.data.sessionID, event.data.inputID)
@@ -1031,12 +1101,15 @@ export function createData(config: CreateDataInput) {
       case "session.execution.succeeded":
       case "session.execution.failed":
       case "session.execution.interrupted":
-        setSessionActive(event.data.sessionID, "idle")
+        setSessionExecuting(event.data.sessionID, false)
         message.update(event.data.sessionID, (draft) => {
           const currentAssistant = message.activeAssistant(draft)
           if (currentAssistant) currentAssistant.retry = undefined
         })
-        if (event.type === "session.execution.interrupted" && event.data.reason === "shutdown") return
+        if (event.type === "session.execution.interrupted" && event.data.reason === "shutdown") {
+          setSessionActive(event.data.sessionID, "idle")
+          return
+        }
         // Mirror the projected idle marker so turn boundaries match before the next message read.
         message.insert(event.data.sessionID, {
           id: messageIDFromEvent(event.id),
@@ -1062,6 +1135,9 @@ export function createData(config: CreateDataInput) {
           sync.invalidate(`session.message:${event.data.sessionID}`)
           refresh(() => result.session.message.sync(event.data.sessionID))
         }
+        // Execution ended, but shells and jobs may still own activity. Keep the last activity state until
+        // the authoritative snapshot arrives rather than flashing idle at every foreground completion.
+        syncSessionActive()
         // An event can overtake the first read; queue a revalidation when that read is still active.
         if (!store.session.info[event.data.sessionID] && !sync.has(`session:${event.data.sessionID}`)) return
         result.session.invalidate(event.data.sessionID)
@@ -1384,6 +1460,9 @@ export function createData(config: CreateDataInput) {
       },
       status(sessionID: string) {
         return store.session.active[sessionID] ?? "idle"
+      },
+      executing(sessionID: string) {
+        return store.session.executing[sessionID] ?? false
       },
       // Inputs are the pending user and synthetic items; compactions are control items.
       input: {

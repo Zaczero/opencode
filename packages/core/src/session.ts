@@ -1,7 +1,7 @@
 export * as Session from "./session.js"
 export * from "./session/schema.js"
 
-import { Effect, Layer, Schema, Context, Stream } from "effect"
+import { Cause, Effect, Layer, Schema, Context, Stream } from "effect"
 import { LLMClient } from "@opencode-ai/ai"
 import { ListAnchor } from "@opencode-ai/schema/session"
 import { and, desc, eq } from "drizzle-orm"
@@ -14,9 +14,9 @@ import { Bus } from "./bus.js"
 import { Instance } from "./instance/service.js"
 import { Database } from "./database/database.js"
 import { SessionProjector } from "./session/projector.js"
-import { SessionMessageTable } from "./session/sql.js"
+import { SessionMessageTable, SessionTable } from "./session/sql.js"
 import { SessionSchema } from "./session/schema.js"
-import { RelativePath } from "./schema.js"
+import { AbsolutePath, RelativePath } from "./schema.js"
 import { Agent } from "@opencode-ai/schema/agent"
 import { App } from "./app.js"
 import { Slug } from "./util/slug.js"
@@ -58,6 +58,7 @@ import { llmClient } from "./effect/app-node-platform.js"
 import { Snapshot } from "./snapshot.js"
 import { Session } from "./session/session.js"
 import { FSUtil } from "@opencode-ai/util/fs-util"
+import { Global } from "@opencode-ai/util/global"
 import type { EventLog } from "@opencode-ai/schema/event-log"
 import { Job } from "./job.js"
 import type { Command } from "./command.js"
@@ -86,7 +87,10 @@ type CreateBaseInput = {
   metadata?: SessionSchema.Metadata
 }
 type CreateInput = CreateBaseInput &
-  ({ location: Location.Ref; parentID?: never } | { parentID: SessionSchema.ID; location?: never })
+  (
+    | { location: Location.Ref; parentID?: never; directory?: never }
+    | { parentID: SessionSchema.ID; location?: never; directory?: string }
+  )
 
 type CompactInput = Parameters<Session.Handle["compact"]>[0] & { sessionID: SessionSchema.ID }
 
@@ -118,7 +122,12 @@ export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<{
     readonly data: SessionSchema.Info[]
   }>
-  readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info, NotFoundError>
+  readonly create: (
+    input: CreateInput,
+  ) => Effect.Effect<
+    SessionSchema.Info,
+    NotFoundError | DestinationNotFoundError | DestinationNotDirectoryError | DestinationUnavailableError
+  >
   readonly fork: (
     input: ForkInput,
   ) => Effect.Effect<SessionSchema.Info, NotFoundError | MessageNotFoundError | ForkEmptyError>
@@ -219,6 +228,8 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const app = yield* App.Metadata
     const database = yield* Database.Service
+    const fs = yield* FSUtil.Service
+    const global = yield* Global.Service
     const db = database.db
     const bus = yield* Bus.Service
     const projects = yield* Project.Service
@@ -240,9 +251,29 @@ const layer = Layer.effect(
         if (recorded) return recorded
         const parent = input.parentID ? yield* store.get(input.parentID) : undefined
         if (input.parentID && parent === undefined) return yield* new NotFoundError({ sessionID: input.parentID })
-        const location = parent?.location ?? input.location
+        let location = parent?.location ?? input.location
         if (location === undefined)
           return yield* Effect.die(new Error("Session.create requires either location or an existing parentID"))
+        if (parent && input.directory !== undefined) {
+          const value = input.directory.trim()
+          const expanded =
+            value === "~" ? global.home : value.startsWith("~/") ? path.join(global.home, value.slice(2)) : value
+          const directory = AbsolutePath.make(path.resolve(location.directory, expanded))
+          const info = yield* fs.stat(directory).pipe(Effect.orElseSucceed(() => undefined))
+          if (!info) return yield* new DestinationNotFoundError({ directory })
+          if (info.type !== "Directory") return yield* new DestinationNotDirectoryError({ directory })
+          location = Location.Ref.make({ directory, workspaceID: location.workspaceID })
+          yield* Location.Service.pipe(
+            instances.provide({ ...parent, location }),
+            Effect.scoped,
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+              return Effect.logWarning("session creation destination unavailable", { directory, cause }).pipe(
+                Effect.andThen(Effect.fail(new DestinationUnavailableError({ directory }))),
+              )
+            }),
+          )
+        }
         const project = yield* projects.resolve(location.directory)
         const projected = yield* bus
           .publish(
@@ -455,6 +486,7 @@ export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.gl
     SessionMove.node,
     SessionProjector.node,
     FSUtil.node,
+    Global.node,
     App.node,
   ],
 })

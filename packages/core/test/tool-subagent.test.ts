@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { mkdir } from "fs/promises"
 import path from "path"
 import { Money } from "@opencode-ai/schema/money"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -322,6 +323,75 @@ describe("SubagentTool", () => {
           })
           const fallbackChild = yield* sessions.get(outputSessionID(fallback.metadata))
           expect(fallbackChild).toMatchObject({ parentID: parent.id, model: parentModel })
+        }),
+      ),
+    ),
+  )
+
+  it.live("starts a child in the requested directory", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const target = path.join(dir.path, "other-project")
+          yield* Effect.promise(() => mkdir(target))
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({ location, model: parentModel })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+
+          const result = yield* executeTool(registry, {
+            sessionID: parent.id,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-subagent-directory",
+              name: SubagentTool.name,
+              input: { agent: "reviewer", description: "other project", prompt: "review", directory: "other-project" },
+            },
+          })
+
+          const child = yield* sessions.get(outputSessionID(result.metadata))
+          expect(child.location.directory).toBe(AbsolutePath.make(target))
+        }),
+      ),
+    ),
+  )
+
+  it.live("rejects an unavailable child directory before creating a child", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({ location, model: parentModel })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+
+          expect(
+            yield* executeTool(registry, {
+              sessionID: parent.id,
+              ...toolIdentity,
+              call: {
+                type: "tool-call",
+                id: "call-subagent-missing-directory",
+                name: SubagentTool.name,
+                input: { agent: "reviewer", description: "missing project", prompt: "review", directory: "missing" },
+              },
+            }),
+          ).toEqual({
+            status: "error",
+            error: { type: "tool.execution", message: "Subagent directory is unavailable: missing" },
+          })
+          expect((yield* sessions.list({ parentID: parent.id })).data).toEqual([])
         }),
       ),
     ),

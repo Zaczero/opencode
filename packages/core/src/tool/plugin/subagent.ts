@@ -33,6 +33,10 @@ export const Input = Schema.Struct({
     description:
       "Continue a specific previous subagent conversation by passing its sessionID. Calls without a sessionID start a new conversation.",
   }),
+  directory: Schema.optionalKey(Schema.String).annotate({
+    description:
+      "Directory where a new subagent starts. Relative paths resolve from this session; omit to inherit this session's directory.",
+  }),
 })
 
 export const Output = Schema.Struct({
@@ -173,17 +177,25 @@ export const Plugin = {
               const child =
                 existing ??
                 (yield* runtime.session
-                  .create({
-                    parentID: context.sessionID,
-                    title: input.description,
-                    agent: Agent.ID.make(input.agent),
-                    model,
-                  })
-                  .pipe(
-                    Effect.mapError(
-                      (error) => new ToolFailure({ message: `Parent session not found: ${context.sessionID}`, error }),
-                    ),
-                  ))
+                   .create({
+                     parentID: context.sessionID,
+                     title: input.description,
+                     agent: Agent.ID.make(input.agent),
+                     model,
+                     ...(input.directory === undefined ? {} : { directory: input.directory }),
+                    })
+                    .pipe(
+                      Effect.mapError(
+                        (error) =>
+                          new ToolFailure({
+                            message:
+                              input.directory === undefined
+                                ? `Parent session not found: ${context.sessionID}`
+                                : `Subagent directory is unavailable: ${input.directory}`,
+                            error,
+                          }),
+                      ),
+                    ))
 
                yield* context.progress({ sessionID: child.id, status: "running" })
 

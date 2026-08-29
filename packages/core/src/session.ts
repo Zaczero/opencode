@@ -100,7 +100,10 @@ type CreateBaseInput = {
   model?: Model.Ref
 }
 type CreateInput = CreateBaseInput &
-  ({ location: Location.Ref; parentID?: never } | { parentID: SessionSchema.ID; location?: never })
+  (
+    | { location: Location.Ref; parentID?: never; directory?: never }
+    | { parentID: SessionSchema.ID; location?: never; directory?: string }
+  )
 
 type CompactInput = {
   id?: SessionMessage.ID
@@ -191,7 +194,9 @@ export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<{
     readonly data: SessionSchema.Info[]
   }>
-  readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info, NotFoundError>
+  readonly create: (
+    input: CreateInput,
+  ) => Effect.Effect<SessionSchema.Info, NotFoundError | DestinationNotFoundError | DestinationNotDirectoryError | DestinationUnavailableError>
   readonly fork: (
     input: ForkInput,
   ) => Effect.Effect<SessionSchema.Info, NotFoundError | MessageNotFoundError | ForkEmptyError>
@@ -391,9 +396,29 @@ const layer = Layer.effect(
         if (recorded) return recorded
         const parent = input.parentID ? yield* store.get(input.parentID) : undefined
         if (input.parentID && parent === undefined) return yield* new NotFoundError({ sessionID: input.parentID })
-        const location = parent?.location ?? input.location
+        let location = parent?.location ?? input.location
         if (location === undefined)
           return yield* Effect.die(new Error("Session.create requires either location or an existing parentID"))
+        if (input.parentID && input.directory !== undefined) {
+          const value = input.directory.trim()
+          const expanded =
+            value === "~" ? global.home : value.startsWith("~/") ? path.join(global.home, value.slice(2)) : value
+          const directory = AbsolutePath.make(path.resolve(location.directory, expanded))
+          const info = yield* fs.stat(directory).pipe(Effect.orElseSucceed(() => undefined))
+          if (!info) return yield* new DestinationNotFoundError({ directory })
+          if (info.type !== "Directory") return yield* new DestinationNotDirectoryError({ directory })
+          location = Location.Ref.make({ directory, workspaceID: location.workspaceID })
+          yield* Location.Service.pipe(
+            Effect.provide(locations.get(location)),
+            Effect.scoped,
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause)
+              return Effect.logWarning("session creation destination unavailable", { directory, cause }).pipe(
+                Effect.andThen(Effect.fail(new DestinationUnavailableError({ directory }))),
+              )
+            }),
+          )
+        }
         const project = yield* projects.resolve(location.directory)
         yield* persistProject(project)
         const projected = yield* bus

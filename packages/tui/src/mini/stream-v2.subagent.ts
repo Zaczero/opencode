@@ -404,16 +404,18 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
     if (existing) return existing
     const pendingPrompts = new Map(child.prompts)
     const pendingTools = new Map(child.tools)
-    let retry = false
     const task = sdk.message
       .list({ sessionID: child.sessionID, limit: CHILD_MESSAGE_LIMIT, order: "desc" }, { signal })
       .then((response) => {
-        if (!active(signal)) return
+        if (!active(signal)) {
+          child.detailStale = false
+          notifyDetail(child)
+          return
+        }
         const buffered = hydrationEvents.get(child.sessionID) ?? []
         hydrationEvents.delete(child.sessionID)
         if (hydrationOverflow.delete(child.sessionID)) {
-          child.hydrated = false
-          retry = true
+          child.detailStale = false
           notifyDetail(child)
           return
         }
@@ -433,10 +435,11 @@ export function createSubagentTracker(input: SubagentTrackerInput): SubagentTrac
       .catch(() => {
         hydrationEvents.delete(child.sessionID)
         hydrationOverflow.delete(child.sessionID)
+        child.detailStale = false
+        notifyDetail(child)
       })
       .finally(() => {
         hydrations.delete(child.sessionID)
-        if (retry && active(signal)) queueMicrotask(() => void hydrateChild(sdk, child, signal))
       })
     hydrations.set(child.sessionID, task)
     return task

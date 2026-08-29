@@ -3657,7 +3657,7 @@ describe("V2 mini transport", () => {
     await transport.close()
   })
 
-  test("retries child hydration after a bounded live-event overflow", async () => {
+  test("keeps live child output after a bounded hydration overflow", async () => {
     const events = feed()
     events.push(connected())
     const client = sdk({
@@ -3666,42 +3666,14 @@ describe("V2 mini transport", () => {
     })
     let childRequests = 0
     let releaseStale!: () => void
-    let releaseRetry!: () => void
     const stale = new Promise<void>((resolve) => {
       releaseStale = resolve
-    })
-    const retry = new Promise<void>((resolve) => {
-      releaseRetry = resolve
     })
     spyOn(client.message, "list").mockImplementation(async (request) => {
       if (request.sessionID !== "ses_child") return ok({ data: [], cursor: {} })
       childRequests++
-      if (childRequests === 1) {
-        await stale
-        return ok({ data: [], cursor: {} })
-      }
-      await retry
-      return ok({
-        data: [
-          {
-            id: "msg_overflow_assistant",
-            type: "assistant" as const,
-            agent: "explore",
-            model: { providerID: "test", id: "model" },
-            content: [{ type: "text" as const, id: "txt_overflow_64", text: "live 64" }],
-            time: { created: 2, completed: 3 },
-          },
-          {
-            id: "msg_overflow_baseline",
-            type: "user" as const,
-            text: "baseline history",
-            files: [],
-            agents: [],
-            time: { created: 1 },
-          },
-        ],
-        cursor: {},
-      })
+      await stale
+      return ok({ data: [], cursor: {} })
     })
     const ui = footer()
     const transport = await createSessionTransport({
@@ -3733,26 +3705,69 @@ describe("V2 mini transport", () => {
     )
       await Bun.sleep(0)
     releaseStale()
-    while (childRequests < 2) await Bun.sleep(0)
+    await Bun.sleep(0)
+    await Bun.sleep(0)
     expect(
       states()
         .at(-1)
         ?.details.ses_child?.commits.some((item) => item.text === "live 64"),
     ).toBe(true)
+    expect(childRequests).toBe(1)
+    await transport.close()
+  })
 
-    releaseRetry()
-    while (
-      !states()
-        .at(-1)
-        ?.details.ses_child?.commits.some((item) => item.text === "baseline history")
-    )
+  test("keeps live child detail visible after a reconnect hydration fails", async () => {
+    const first = feed()
+    const second = feed()
+    first.push(connected("evt_connected_1"))
+    second.push(connected("evt_connected_2"))
+    const client = sdk({
+      streams: [first, second],
+      sessions: [{ id: "ses_child", parentID: "ses_1", time: { updated: 1 } }],
+    })
+    let childRequests = 0
+    spyOn(client.message, "list").mockImplementation(async (request) => {
+      if (request.sessionID !== "ses_child") return ok({ data: [], cursor: {} })
+      childRequests++
+      if (childRequests > 1) throw new Error("stale hydration request")
+      return ok({ data: [], cursor: {} })
+    })
+    const ui = footer()
+    const transport = await createSessionTransport({
+      sdk: client,
+      sessionID: "ses_1",
+      thinking: false,
+      footer: ui.api,
+    })
+    const states = () => ui.events.flatMap((event) => (event.type === "stream.subagent" ? [event.state] : []))
+    transport.selectSubagent("ses_child")
+    while (childRequests < 1) await Bun.sleep(0)
+    while (!states().at(-1)?.details.ses_child) await Bun.sleep(0)
+
+    first.push({
+      id: "evt_child_live",
+      created: 0,
+      type: "session.text.delta",
+      data: {
+        sessionID: "ses_child",
+        assistantMessageID: "msg_live_assistant",
+        ordinal: 0,
+        delta: "still running",
+      },
+    })
+    while (!states().at(-1)?.details.ses_child?.commits.some((item) => item.text === "still running"))
       await Bun.sleep(0)
+
+    first.close()
+    while (childRequests < 2) await Bun.sleep(0)
+    await Bun.sleep(0)
+    await Bun.sleep(0)
+
     expect(
       states()
         .at(-1)
-        ?.details.ses_child?.commits.some((item) => item.text === "live 64"),
+        ?.details.ses_child?.commits.some((item) => item.text === "still running"),
     ).toBe(true)
-    expect(childRequests).toBe(2)
     await transport.close()
   })
 

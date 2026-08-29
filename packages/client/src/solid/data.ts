@@ -250,12 +250,35 @@ export function createData(config: CreateDataInput) {
   )
   const messageIndex = new Map<string, Map<string, number>>()
   const messageVersion = new Map<string, number>()
-  const sync = createSync()
+  let activeRequest = 0
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
+  const sync = createSync()
 
   function setSessionActive(sessionID: string, status: DataSessionStatus) {
     activeUpdates?.set(sessionID, status)
     setStore("session", "active", sessionID, status)
+  }
+
+  function syncSessionActive() {
+    const request = ++activeRequest
+    const updates = new Map<string, DataSessionStatus | undefined>()
+    activeUpdates = updates
+    void api()
+      .session.active()
+      .then((active) => {
+        if (request !== activeRequest) return
+        if (activeUpdates !== updates) return
+        const snapshot = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
+        updates.forEach((status, id) => {
+          if (status === undefined) return snapshot.delete(id)
+          snapshot.set(id, status)
+        })
+        activeUpdates = undefined
+        setStore("session", "active", reconcile(Object.fromEntries(snapshot)))
+      })
+      .catch(() => {
+        if (activeUpdates === updates) activeUpdates = undefined
+      })
   }
 
   function removePending(sessionID: string, inboxID?: string) {
@@ -798,6 +821,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.synthetic":
+        syncSessionActive()
         message.insert(event.data.sessionID, {
           id: messageIDFromEvent(event.id),
           type: "synthetic",
@@ -955,6 +979,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.tool.success":
+        syncSessionActive()
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           if (tool.state.status !== "running") return
           tool.state = {

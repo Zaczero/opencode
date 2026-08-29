@@ -51,6 +51,7 @@ export const make = Effect.fn("Session.make")(function* () {
   const admission = yield* SessionInbox.Service
   const fs = yield* FSUtil.Service
   const scope = yield* Scope.Scope
+  const activeShells = new Map<object, SessionSchema.ID>()
 
   const get = Effect.fn("Session.get")(function* (sessionID: SessionSchema.ID) {
     const session = yield* store.get(sessionID)
@@ -191,42 +192,51 @@ export const make = Effect.fn("Session.make")(function* () {
   ) {
     const session = yield* get(sessionID)
     // The server owns completion recording even if the submitting client disconnects.
-    const running = yield* Effect.gen(function* () {
-      const started = yield* SessionShell.start({ session, command: input.command }).pipe(
-        Effect.provideService(Instance.Service, instances),
-        Effect.tapError((error) =>
-          synthetic(sessionID, {
-            text: `User shell command failed to start:\n${input.command}\n\n${error.message}`,
-            description: input.command,
-            metadata: { source: "shell", state: "error" },
+    const running = yield* Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const token = {}
+        activeShells.set(token, sessionID)
+        return token
+      }),
+      () =>
+        Effect.gen(function* () {
+          const started = yield* SessionShell.start({ session, command: input.command }).pipe(
+            Effect.provideService(Instance.Service, instances),
+            Effect.tapError((error) =>
+              synthetic(sessionID, {
+                text: `User shell command failed to start:\n${input.command}\n\n${error.message}`,
+                description: input.command,
+                metadata: { source: "shell", state: "error" },
+                resume: false,
+              }),
+            ),
+            Effect.orDie,
+          )
+          yield* bus.publish(
+            SessionEvent.Shell.Started,
+            {
+              sessionID,
+              shell: started.info,
+            },
+            { id: input.id },
+          )
+          const terminal = yield* started.result
+          const preview = yield* started.output
+          yield* bus.publish(SessionEvent.Shell.Ended, {
+            sessionID,
+            shell: terminal.info,
+            output: preview,
+          })
+          yield* synthetic(sessionID, {
+            ...ShellResult.userNotification(terminal),
             resume: false,
-          }),
-        ),
-        Effect.orDie,
-      )
-      yield* bus.publish(
-        SessionEvent.Shell.Started,
-        {
-          sessionID,
-          shell: started.info,
-        },
-        { id: input.id },
-      )
-      const terminal = yield* started.result
-      const preview = yield* started.output
-      yield* bus.publish(SessionEvent.Shell.Ended, {
-        sessionID,
-        shell: terminal.info,
-        output: preview,
-      })
-      yield* synthetic(sessionID, {
-        ...ShellResult.userNotification(terminal),
-        resume: false,
-      }).pipe(
-        Effect.catchTag("Session.NotFoundError", () => Effect.void),
-        Effect.orDie,
-      )
-    }).pipe(Effect.forkIn(scope, { startImmediately: true }))
+          }).pipe(
+            Effect.catchTag("Session.NotFoundError", () => Effect.void),
+            Effect.orDie,
+          )
+        }),
+      (token) => Effect.sync(() => activeShells.delete(token)),
+    ).pipe(Effect.forkIn(scope, { startImmediately: true }))
     yield* Fiber.join(running)
   })
   const skill = Effect.fn("Session.skill")(function* (
@@ -424,7 +434,7 @@ export const make = Effect.fn("Session.make")(function* () {
       revert,
     }
   }
-  return { forSession }
+  return { forSession, activeShells: Effect.sync(() => new Set(activeShells.values())) }
 })
 
 export type Handle = ReturnType<Effect.Success<ReturnType<typeof make>>["forSession"]>

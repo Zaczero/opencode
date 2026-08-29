@@ -433,6 +433,7 @@ const layer = Layer.effect(
       wait: (sessionID) => sessions.forSession(sessionID).wait(),
       active: Effect.gen(function* () {
         const active = new Set(yield* execution.active)
+        for (const sessionID of yield* sessions.activeShells) active.add(sessionID)
         for (const sessionID of yield* jobs.activeSessions) active.add(sessionID)
         return active
       }),

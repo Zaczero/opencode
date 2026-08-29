@@ -485,6 +485,148 @@ test("preserves assistant content replacement events across an active message re
   }
 })
 
+test("preserves a live assistant that starts while a child transcript hydrates", async () => {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const release = Promise.withResolvers<void>()
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async () => {
+      await release.promise
+      return Response.json({ data: [], cursor: {} })
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: "/project",
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    dispose,
+  }))
+  const emit = (event: OpenCodeEvent) => listeners.forEach((listener) => listener({ name: event.type, details: event }))
+
+  try {
+    const hydration = setup.data.session.message.sync("ses_child")
+    emit({
+      id: "evt_step_started",
+      created: 1,
+      type: "session.step.started",
+      durable: { aggregateID: "ses_child", seq: 1, version: 1 },
+      data: {
+        sessionID: "ses_child",
+        assistantMessageID: "msg_child",
+        agent: "build",
+        model: { id: "model", providerID: "provider" },
+      },
+    })
+    emit({
+      id: "evt_text_started",
+      created: 2,
+      type: "session.text.started",
+      data: { sessionID: "ses_child", assistantMessageID: "msg_child", ordinal: 0 },
+    })
+    emit({
+      id: "evt_text_delta_first",
+      created: 3,
+      type: "session.text.delta",
+      data: { sessionID: "ses_child", assistantMessageID: "msg_child", ordinal: 0, delta: "first" },
+    })
+    release.resolve()
+    await hydration
+    emit({
+      id: "evt_text_delta_second",
+      created: 4,
+      type: "session.text.delta",
+      data: { sessionID: "ses_child", assistantMessageID: "msg_child", ordinal: 0, delta: " second" },
+    })
+
+    expect(setup.data.session.message.list("ses_child")[0]).toMatchObject({
+      id: "msg_child",
+      content: [{ type: "text", text: "first second" }],
+    })
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("preserves a live compaction while a child transcript hydrates", async () => {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const release = Promise.withResolvers<void>()
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async () => {
+      await release.promise
+      return Response.json({
+        data: [
+          {
+            id: "msg_compaction",
+            type: "compaction",
+            status: "running",
+            reason: "auto",
+            summary: "",
+            recent: "",
+            time: { created: 1 },
+          },
+        ],
+        cursor: {},
+      })
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: "/project",
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+    }),
+    dispose,
+  }))
+  const emit = (event: OpenCodeEvent) => listeners.forEach((listener) => listener({ name: event.type, details: event }))
+
+  try {
+    const hydration = setup.data.session.message.sync("ses_child")
+    emit({
+      id: "evt_compaction_started",
+      created: 1,
+      type: "session.compaction.started",
+      durable: { aggregateID: "ses_child", seq: 1, version: 1 },
+      data: { sessionID: "ses_child", inputID: "msg_compaction", reason: "auto", recent: "" },
+    })
+    emit({
+      id: "evt_compaction_delta_first",
+      created: 2,
+      type: "session.compaction.delta",
+      data: { sessionID: "ses_child", text: "first" },
+    })
+    release.resolve()
+    await hydration
+    emit({
+      id: "evt_compaction_delta_second",
+      created: 3,
+      type: "session.compaction.delta",
+      data: { sessionID: "ses_child", text: " second" },
+    })
+
+    expect(setup.data.session.message.list("ses_child")[0]).toMatchObject({
+      id: "msg_compaction",
+      summary: "first second",
+    })
+  } finally {
+    setup.dispose()
+  }
+})
+
 async function wait(check: () => boolean) {
   const started = Date.now()
   while (!check()) {

@@ -508,6 +508,52 @@ describe("SessionRestart background recovery", () => {
     }),
   )
 
+  it.effect("delivers a live subagent completion after its dispatch location is gone", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_background_live_parent")
+      const child = Session.ID.make("ses_background_live_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent })
+
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, () => Effect.void, undefined, jobs)
+      const restart = Context.get(context, SessionRestart.Service)
+      const childDone = yield* Deferred.make<string>()
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Keep delivering completion",
+        },
+        run: Deferred.await(childDone),
+      })
+      yield* jobs.background(child)
+
+      // SessionRestart owns this observer rather than the location-scoped dispatch plugin.
+      yield* Deferred.succeed(childDone, "Completed after location eviction")
+      yield* jobs.wait({ id: child })
+      expect(yield* jobs.pendingBackground).toEqual([])
+
+      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
+        {
+          payload: {
+            text: expect.stringContaining("Completed after location eviction"),
+            metadata: { source: "subagent", childID: child, state: "completed" },
+          },
+        },
+      ])
+      yield* restart.resumeSuspendedSessions
+      expect(yield* SessionInbox.list(database.db, parent)).toHaveLength(1)
+    }),
+  )
+
   for (const delivered of [false, true]) {
     it.effect(`does not duplicate a shell notification already ${delivered ? "delivered" : "admitted"}`, () =>
       Effect.gen(function* () {

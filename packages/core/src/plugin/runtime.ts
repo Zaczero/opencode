@@ -13,6 +13,8 @@ export interface Interface {
   readonly session: Pick<
     Session.Interface,
     | "get"
+    | "list"
+    | "active"
     | "create"
     | "messages"
     | "prompt"
@@ -69,6 +71,8 @@ export const layerWithCell = (cell: Cell) =>
     Service.of({
       session: {
         get: (sessionID) => require(cell, (runtime) => runtime.session.get(sessionID)),
+        list: (input) => require(cell, (runtime) => runtime.session.list(input)),
+        active: require(cell, (runtime) => runtime.session.active),
         create: (input) => require(cell, (runtime) => runtime.session.create(input)),
         messages: (input) => require(cell, (runtime) => runtime.session.messages(input)),
         prompt: (input) => require(cell, (runtime) => runtime.session.prompt(input)),

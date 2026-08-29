@@ -227,12 +227,40 @@ export const layer = (options?: Options) =>
           ),
         })
         yield* jobs.background(background.id)
-        yield* jobs.wait({ id: background.id }).pipe(
-          Effect.flatMap((result) => (result.info ? notify(result.info) : Effect.void)),
-          Effect.ignore,
-          Effect.forkIn(scope),
+      })
+
+      const waitForChildBackground = Effect.fnUntraced(function* (childID: SessionSchema.ID) {
+        while (true) {
+          const outstanding = yield* jobs.running(childID)
+          if (outstanding.length === 0) return
+          yield* Effect.forEach(outstanding, (job) => jobs.wait({ id: job.id }), { discard: true })
+          yield* sessions.wait(childID)
+        }
+      })
+
+      const deliverSettledSubagent = Effect.fnUntraced(function* (background: Job.Background) {
+        if (background.status === "running" || background.recovery.kind !== "subagent") return
+        const recovery = background.recovery
+        if ((yield* jobs.running(recovery.childSessionID)).length === 0) {
+          yield* recoverSubagent(background, recovery, new Set())
+          return
+        }
+        // The child is idle between its own background jobs. Keep the waiter in the process scope rather
+        // than the dispatch location, then report only after all child-owned work has drained.
+        yield* waitForChildBackground(recovery.childSessionID).pipe(
+          Effect.andThen(recoverSubagent(background, recovery, new Set())),
+          Effect.forkIn(scope, { startImmediately: true }),
         )
       })
+
+      // Location-scoped plugins can be evicted while work they dispatched is still running. Delivery is
+      // process-owned so the terminal marker cannot outlive the observer that must acknowledge it.
+      const unsubscribe = yield* jobs.onBackgroundSettled((background) =>
+        deliverSettledSubagent(background).pipe(
+          Effect.catchCause((cause) => Effect.logError("failed to deliver background completion", { cause })),
+        ),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
 
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {

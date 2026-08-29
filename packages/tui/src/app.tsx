@@ -607,7 +607,15 @@ function App(props: { pair?: DialogPairCredentials }) {
   )
   const terminalBusy = createMemo(() => {
     const session = terminalSession()
-    return session ? data.session.family(session.id).some((id) => data.session.status(id) === "running") : false
+    return session
+      ? data.session
+          .family(session.id)
+          .some(
+            (id) =>
+              data.session.status(id) === "running" ||
+              data.session.message.list(id).some((message) => message.type === "shell" && message.status === "running"),
+          )
+      : false
   })
   createEffect(() => {
     if (!terminalBusy()) {

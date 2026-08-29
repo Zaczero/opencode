@@ -33,6 +33,21 @@ test("tools are structural values", async () => {
   })
 })
 
+test("parameterless tools advertise an empty object schema", () => {
+  // Providers reject a tool whose parameters are not an object schema, and `Schema.Struct({})`
+  // renders as "object or array" with no top-level type.
+  const empty: Info = {
+    name: "empty",
+    description: "Empty struct",
+    input: Schema.Struct({}),
+    execute: () => Effect.succeed({ content: "unused" }),
+  }
+  const zodEmpty: Info = { ...empty, name: "zod", input: z.object({}) }
+
+  expect(definition(empty).inputSchema).toEqual({ type: "object", properties: {}, additionalProperties: false })
+  expect(definition(zodEmpty).inputSchema).toMatchObject({ type: "object" })
+})
+
 test("Effect tool schemas use exact optional keys and flatten compatible constraints", () => {
   const tool: Info = {
     name: "constraints",
@@ -386,7 +401,7 @@ test("raw JSON schemas pass input through when they cannot be imported", async (
   })
 })
 
-test("missing external input schemas fall back to an empty schema", () => {
+test("missing external input schemas fall back to an empty object schema", () => {
   const tool = {
     name: "external",
     description: "External tool",
@@ -397,6 +412,6 @@ test("missing external input schemas fall back to an empty schema", () => {
   expect(definition(tool)).toEqual({
     name: "external",
     description: "External tool",
-    inputSchema: {},
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
   })
 })

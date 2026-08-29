@@ -151,11 +151,22 @@ const validateStandard = (
     }),
   )
 
+// Every provider requires a tool's parameters to be an object schema, but a parameterless tool
+// reaches here as something weaker: no input at all, or `Schema.Struct({})`, which Effect renders
+// as "an object or an array" with no top-level `type`. Substitute the empty object schema those
+// all mean. Decoding is unaffected -- it runs against the declared schema, not this one.
 const inputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
-  if (schema === undefined || schema === null) return {}
-  if (isStandardSchema(schema)) return standardJsonSchema(schema, "input")
-  return Schema.isSchema(schema) ? toJsonSchema(schema) : schema
+  if (schema === undefined || schema === null) return NO_PARAMETERS
+  const converted = isStandardSchema(schema)
+    ? standardJsonSchema(schema, "input")
+    : Schema.isSchema(schema)
+      ? toJsonSchema(schema)
+      : schema
+  if (!isRecord(converted)) return NO_PARAMETERS
+  return converted.type === "object" || "properties" in converted ? converted : NO_PARAMETERS
 }
+
+const NO_PARAMETERS: JsonSchema.JsonSchema = { type: "object", properties: {}, additionalProperties: false }
 
 const outputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
   if (isStandardSchema(schema)) return standardJsonSchema(schema, "output")

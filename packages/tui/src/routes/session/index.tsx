@@ -119,6 +119,7 @@ addDefaultParsers(parsers.parsers)
 // Exclude temporary bottom space when measuring the real transcript height.
 const NAVIGATION_SLACK_ID = "session-navigation-slack"
 const BACKGROUND_TOOL_HINT_DELAY = 3_000
+const STREAM_MARKDOWN_PAINT_INTERVAL_MS = 100
 
 // The tail comfortably overfills a tall viewport; older rows mount as the reader approaches them.
 const TRANSCRIPT_TAIL_ROWS = 40
@@ -2593,13 +2594,36 @@ function TextPart(props: { last: boolean; part: SessionMessageAssistantText; mes
   const theme = useTheme()
   const { currentSyntax: syntax } = useThemes()
   const plugins = usePlugin()
+  const [text, setText] = createSignal(props.part.text.trim())
+  let rendered = props.part.text.trim()
+  let paint: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const next = props.part.text.trim()
+    if (next === rendered) return
+    if (props.message.time.completed !== undefined || !text()) {
+      if (paint) clearTimeout(paint)
+      paint = undefined
+      rendered = next
+      setText(next)
+      return
+    }
+    if (paint) return
+    paint = setTimeout(() => {
+      paint = undefined
+      rendered = props.part.text.trim()
+      setText(rendered)
+    }, STREAM_MARKDOWN_PAINT_INTERVAL_MS)
+  })
+  onCleanup(() => {
+    if (paint) clearTimeout(paint)
+  })
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={text()}>
       <box paddingLeft={3} flexShrink={0}>
         {/* Apply content before streaming so completion does not freeze the previous Markdown tokens. */}
         <markdown
           syntaxStyle={syntax()}
-          content={props.part.text.trim()}
+          content={text()}
           streaming={props.message.time.completed === undefined}
           internalBlockMode="top-level"
           tableOptions={{ style: "grid", cellPaddingX: 1 }}

@@ -1,4 +1,4 @@
-import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, Match, onCleanup, Show, Switch } from "solid-js"
 import { RGBA, TextAttributes } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import type {
@@ -16,6 +16,7 @@ import { use } from "./render-context"
 import { generateThinkingSyntax } from "./thinking-syntax"
 
 export const INLINE_TOOL_ICON_WIDTH = 2
+const STREAM_MARKDOWN_PAINT_INTERVAL_MS = 100
 
 export function ReasoningPart(props: {
   last: boolean
@@ -153,15 +154,39 @@ export function TextPart(props: {
   const theme = useTheme()
   const { currentSyntax: syntax } = useThemes()
   const plugins = usePlugin()
+  let rendered = { text: props.part.text.trim(), streaming: props.message.time.completed === undefined }
+  const [painted, setPainted] = createSignal(rendered)
+  let paint: ReturnType<typeof setTimeout> | undefined
+  createEffect(() => {
+    const next = props.part.text.trim()
+    const streaming = props.message.time.completed === undefined
+    if (next === rendered.text && streaming === rendered.streaming) return
+    if (!streaming || !rendered.text) {
+      if (paint) clearTimeout(paint)
+      paint = undefined
+      rendered = { text: next, streaming }
+      setPainted(rendered)
+      return
+    }
+    if (paint) return
+    paint = setTimeout(() => {
+      paint = undefined
+      rendered = { text: props.part.text.trim(), streaming: props.message.time.completed === undefined }
+      setPainted(rendered)
+    }, STREAM_MARKDOWN_PAINT_INTERVAL_MS)
+  })
+  onCleanup(() => {
+    if (paint) clearTimeout(paint)
+  })
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={painted().text}>
       <box paddingLeft={3} flexShrink={0}>
         {/* Configure custom nodes before parsing; apply content before streaming so completion keeps the final tokens. */}
         <markdown
           syntaxStyle={syntax()}
           renderNode={plugins.markdown()}
-          content={props.part.text.trim()}
-          streaming={props.message.time.completed === undefined}
+          content={painted().text}
+          streaming={painted().streaming}
           internalBlockMode="top-level"
           tableOptions={{ style: "grid", cellPaddingX: 1 }}
           conceal={ctx.markdownMode() === "rendered"}

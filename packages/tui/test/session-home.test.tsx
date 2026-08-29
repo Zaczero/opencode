@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { type Renderable, ScrollBoxRenderable } from "@opentui/core"
+import { CodeRenderable, type Renderable, ScrollBoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect, FileSystem } from "effect"
 import { Global } from "@opencode/util/global"
@@ -110,6 +110,14 @@ test.each([
     }).pipe(Effect.provide(Global.layerWith({ state: state.path })), Effect.provide(FileSystem.layerNoop({}))),
   )
   try {
+    if (mode === "mixed") {
+      const blocks = (root: Renderable): CodeRenderable[] =>
+        root instanceof CodeRenderable ? [root] : root.getChildren().flatMap(blocks)
+      await setup.waitFor(() =>
+        blocks(setup.renderer.root).some((block) => block.content.includes("History message 0399")),
+      )
+      await Promise.all(blocks(setup.renderer.root).map((block) => block.highlightingDone))
+    }
     await setup.waitForFrame((frame) => frame.includes("History message 0399"))
     const findScrollBox = (root: Renderable): ScrollBoxRenderable | undefined =>
       root instanceof ScrollBoxRenderable && root.getRenderable("message-399")

@@ -11,6 +11,7 @@
 import path from "path"
 import { CliRenderEvents, createCliRenderer, type CliRenderer, type ScrollbackWriter } from "@opentui/core"
 import { isFallbackTitle } from "@opencode-ai/util/session-title-fallback"
+import { terminalTitle } from "../util/terminal-title"
 import { monoSnapshot } from "./mono"
 import { entrySplash, exitSplash, splashMeta } from "./splash"
 import { resolveRunTheme } from "./theme"
@@ -80,7 +81,7 @@ export type Lifecycle = {
   footer: FooterApi
   onResize(fn: () => void): () => void
   refreshTheme(): void
-  setTitle(title?: string): void
+  setTitle(title?: string, working?: boolean): void
   resetForReplay(input: { sessionTitle?: string; sessionID?: string; history: RunPrompt[] }): Promise<void>
   close(input: { showExit: boolean; sessionTitle?: string; sessionID?: string; history?: RunPrompt[] }): Promise<void>
 }
@@ -176,10 +177,25 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
     clearOnShutdown: false,
   })
   if (mono) renderer.on(CliRenderEvents.EXTERNAL_OUTPUT, monoSnapshot)
-  const setTitle = (title?: string) => {
+  let title = input.sessionTitle
+  let working = false
+  let frame = 0
+  let titleTimer: ReturnType<typeof setInterval> | undefined
+  const renderTitle = () => {
     if (input.host.platform !== "linux") return
-    if (!title || isFallbackTitle(title)) return renderer.setTerminalTitle("OpenCode")
-    renderer.setTerminalTitle(`OC | ${title.length > 40 ? title.slice(0, 37) + "..." : title}`)
+    renderer.setTerminalTitle(terminalTitle(title, working, frame))
+  }
+  const setTitle = (next?: string, active = working) => {
+    title = next
+    if (working === active) return renderTitle()
+    working = active
+    frame = 0
+    if (titleTimer) clearInterval(titleTimer)
+    titleTimer = working ? setInterval(() => {
+      frame++
+      renderTitle()
+    }, 80) : undefined
+    renderTitle()
   }
   setTitle(input.sessionTitle)
   const theme = await resolveRunTheme(renderer, tuiConfig.theme, mono)
@@ -333,6 +349,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
         await renderer.idle().catch(() => {})
       }
     } finally {
+      if (titleTimer) clearInterval(titleTimer)
       footer.close()
       await footer.idle().catch(() => {})
       footer.destroy()

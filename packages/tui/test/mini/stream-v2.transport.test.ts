@@ -307,6 +307,79 @@ describe("V2 mini transport", () => {
     await transport.close()
   })
 
+  test("reports model and shell activity for the terminal title", async () => {
+    const events = feed()
+    events.push(connected())
+    const activity: boolean[] = []
+    const transport = await createSessionTransport({
+      sdk: sdk({ streams: [events] }),
+      sessionID: "ses_1",
+      thinking: false,
+      footer: footer().api,
+      onSessionActivity: (working) => activity.push(working),
+    })
+
+    events.push({
+      id: "evt_execution_started",
+      created: 1,
+      type: "session.execution.started",
+      durable: durable("ses_1", 1),
+      data: { sessionID: "ses_1" },
+    })
+    events.push({
+      id: "evt_execution_succeeded",
+      created: 2,
+      type: "session.execution.succeeded",
+      durable: durable("ses_1", 2),
+      data: { sessionID: "ses_1" },
+    })
+    events.push({
+      id: "evt_shell_started",
+      created: 3,
+      type: "session.shell.started",
+      durable: durable("ses_1", 3),
+      data: {
+        sessionID: "ses_1",
+        shell: {
+          id: "sh_working",
+          status: "running",
+          command: "sleep 1",
+          cwd: "/tmp",
+          shell: "/bin/sh",
+          file: "/tmp/working",
+          metadata: {},
+          time: { started: 3 },
+        },
+      },
+    })
+    events.push({
+      id: "evt_shell_ended",
+      created: 4,
+      type: "session.shell.ended",
+      durable: durable("ses_1", 4),
+      data: {
+        sessionID: "ses_1",
+        shell: {
+          id: "sh_working",
+          status: "exited",
+          command: "sleep 1",
+          cwd: "/tmp",
+          shell: "/bin/sh",
+          file: "/tmp/working",
+          exit: 0,
+          metadata: {},
+          time: { started: 3, completed: 4 },
+        },
+        output: { output: "", cursor: 0, size: 0, truncated: false },
+      },
+    })
+
+    while (activity.filter(Boolean).length < 2 || activity.at(-1) !== false) await Bun.sleep(0)
+    expect(activity).toContain(true)
+    expect(activity.at(-1)).toBe(false)
+    await transport.close()
+  })
+
   test("formats footer usage with compact tokens and context percentage", async () => {
     const events = feed()
     events.push(connected())

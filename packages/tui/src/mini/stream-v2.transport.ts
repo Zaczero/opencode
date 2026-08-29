@@ -49,6 +49,7 @@ type StreamInput = {
   footer: FooterApi
   onCommit?: (commit: StreamCommit) => void
   onSessionTitle?: (title: string) => void
+  onSessionActivity?: (working: boolean) => void
   trace?: Trace
   signal?: AbortSignal
   onCatalogRefresh?: (signal?: AbortSignal) => unknown | Promise<unknown>
@@ -508,6 +509,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     attempt.generation === generation &&
     attempt.client === sdk
 
+  let syncActivity = () => {}
   const subagents = createSubagentTracker({
     sessionID: input.sessionID,
     thinking: input.thinking,
@@ -521,8 +523,13 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
         { commits: [], updates: [{ type: "stream.subagent", state: snapshot }] },
       )
       syncBlockers()
+      syncActivity()
     },
   })
+  syncActivity = () => {
+    const shellRunning = [...state.shellStarted].some((id) => !state.shellEnded.has(id))
+    input.onSessionActivity?.(state.rootActive || shellRunning || subagents.busy())
+  }
   controller.signal.addEventListener("abort", () => subagents.close(), { once: true })
 
   // The one "go idle" transition, shared by settlement, terminal events, and the
@@ -898,6 +905,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       signal: attempt.signal,
       reconnect: next.reconnect,
     })
+    syncActivity()
     if (!current(attempt)) return
     write([], {
       phase: state.rootActive ? "running" : "idle",
@@ -1349,6 +1357,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     apply(attempt, event)
+    syncActivity()
   }
 
   const hydration = new Map<number, Promise<void>>()

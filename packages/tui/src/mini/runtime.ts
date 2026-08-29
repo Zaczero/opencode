@@ -805,6 +805,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
           state.sessionTitle = title
           shell.setTitle(title)
         },
+        onSessionActivity: (working) => shell.setTitle(state.sessionTitle, working),
         trace: log,
         onCatalogRefresh: requestCatalogRefresh,
         contextLimit: (model) =>

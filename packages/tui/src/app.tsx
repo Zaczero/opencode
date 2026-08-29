@@ -79,7 +79,7 @@ import { PromptHistoryProvider } from "./prompt/history"
 import { FrecencyProvider } from "./prompt/frecency"
 import { PromptStashProvider } from "./prompt/stash"
 import { Toast, ToastProvider, useToast } from "./ui/toast"
-import { isFallbackTitle } from "@opencode-ai/util/session-title-fallback"
+import { terminalTitle } from "./util/terminal-title"
 import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
@@ -596,9 +596,23 @@ function App(props: { pair?: DialogPairCredentials }) {
   })
 
   let active: { id: string; title?: string } | undefined
+  const [titleFrame, setTitleFrame] = createSignal(0)
+  const terminalSession = createMemo(() => (route.data.type === "session" ? data.session.get(route.data.sessionID) : undefined))
+  const terminalBusy = createMemo(() => {
+    const session = terminalSession()
+    return session ? data.session.family(session.id).some((id) => data.session.status(id) === "running") : false
+  })
+  createEffect(() => {
+    if (!terminalBusy()) {
+      setTitleFrame(0)
+      return
+    }
+    const timer = setInterval(() => setTitleFrame((frame) => frame + 1), 80)
+    onCleanup(() => clearInterval(timer))
+  })
   // Update terminal window title based on current route and session
   createEffect(() => {
-    const session = route.data.type === "session" ? data.session.get(route.data.sessionID) : undefined
+    const session = terminalSession()
     if (session) active = { id: session.id, title: session.title }
     if (!terminalTitleEnabled()) return
 
@@ -608,13 +622,7 @@ function App(props: { pair?: DialogPairCredentials }) {
     }
 
     if (route.data.type === "session") {
-      const title = session?.title
-      if (!title || isFallbackTitle(title)) {
-        renderer.setTerminalTitle("OpenCode")
-        return
-      }
-
-      renderer.setTerminalTitle(`OC | ${title.length > 40 ? title.slice(0, 37) + "…" : title}`)
+      renderer.setTerminalTitle(terminalTitle(session?.title, terminalBusy(), titleFrame()))
       return
     }
 

@@ -62,6 +62,7 @@ type Active = {
 
 type State = {
   jobs: SynchronizedRef.SynchronizedRef<Map<string, Active>>
+  backgroundListeners: Set<(background: Background) => Effect.Effect<void>>
   scope: Scope.Scope
 }
 
@@ -69,11 +70,13 @@ type FinishResult = {
   info?: Info
   done?: Deferred.Deferred<Info>
   scope?: Scope.Closeable
+  background?: Background
 }
 
 type BackgroundResult = {
   info?: Info
   backgrounded?: Deferred.Deferred<Info>
+  background?: Background
 }
 
 type StartResult = { info: Info } | { info: Info; scope: Scope.Closeable }
@@ -140,6 +143,10 @@ export interface Interface {
   readonly activeSessions: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
+  /** Observe terminal background subagents after their durable recovery record is written. */
+  readonly onBackgroundSettled: (
+    listener: (background: Background) => Effect.Effect<void>,
+  ) => Effect.Effect<Effect.Effect<void>>
   readonly completeBackground: (notificationID: SessionMessage.ID) => Effect.Effect<void>
 }
 
@@ -170,6 +177,18 @@ function decrementSession(input: Map<SessionSchema.ID, number>, sessionID: Sessi
   return next
 }
 
+function backgroundRecord(job: Active): Background | undefined {
+  if (!job.recovery || !job.info.notificationID) return undefined
+  return {
+    id: job.info.id,
+    notificationID: job.info.notificationID,
+    recovery: job.recovery,
+    status: job.info.status,
+    ...(job.info.output !== undefined ? { output: job.info.output } : {}),
+    ...(job.info.error !== undefined ? { error: job.info.error } : {}),
+  }
+}
+
 /**
  * Makes one scoped, process-local registry. Explicitly recoverable background
  * work also owns a durable notification marker until its notification is admitted.
@@ -187,19 +206,22 @@ export const make = Effect.gen(function* () {
   } while (after)
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map()),
+    backgroundListeners: new Set(),
     scope: yield* Scope.Scope,
   }
 
+  const notifyBackgroundSettled = Effect.fnUntraced(function* (background: Background) {
+    yield* Effect.forEach(state.backgroundListeners, (listener) => listener(background), { discard: true })
+  })
+
   const persistBackground = Effect.fnUntraced(function* (job: Active) {
-    if (!job.recovery || !job.info.notificationID) return
-    yield* kv.set(`${backgroundPrefix}${job.info.notificationID}`, {
-      id: job.info.id,
-      notificationID: job.info.notificationID,
-      recovery: job.recovery,
-      status: job.info.status,
-      ...(job.info.output !== undefined ? { output: job.info.output } : {}),
-      ...(job.info.error !== undefined ? { error: job.info.error } : {}),
-    })
+    const background = backgroundRecord(job)
+    if (!background) return undefined
+    yield* kv.set(`${backgroundPrefix}${background.notificationID}`, background)
+    const current = deliveries.get(background.notificationID)
+    if (current) current.background = background
+    else deliveries.set(background.notificationID, { background, done: yield* Deferred.make<void>() })
+    return background
   })
 
   const settle = Effect.fnUntraced(function* (id: string, scope: Scope.Closeable, exit: Exit.Exit<string, unknown>) {
@@ -227,11 +249,20 @@ export const make = Effect.gen(function* () {
             ...(Exit.isFailure(exit) ? { error: errorText(Cause.squash(exit.cause)) } : {}),
           },
         }
-        if (status !== "cancelled") yield* persistBackground(next)
-        return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]
+        const background = status === "cancelled" ? undefined : yield* persistBackground(next)
+        return [
+          {
+            info: snapshot(next),
+            done: job.done,
+            scope: job.scope,
+            ...(next.isBackgrounded && background ? { background } : {}),
+          },
+          new Map(jobs).set(id, next),
+        ]
       }),
     )
     if (result.info && result.done) yield* Deferred.succeed(result.done, result.info)
+    if (result.background?.recovery.kind === "subagent") yield* notifyBackgroundSettled(result.background)
     if (result.scope) {
       yield* Scope.close(result.scope, Exit.void).pipe(Effect.forkIn(state.scope, { startImmediately: true }))
     }
@@ -346,8 +377,7 @@ export const make = Effect.gen(function* () {
         ...(job.recovery ? { notificationID: job.info.notificationID ?? SessionMessage.ID.create() } : {}),
       },
     }
-    yield* persistBackground(next)
-    return next
+    return { job: next, background: yield* persistBackground(next) }
   })
 
   const background: Interface["background"] = Effect.fn("Job.background")(function* (id) {
@@ -359,10 +389,15 @@ export const make = Effect.gen(function* () {
         if (!job || (job.info.status !== "running" && !job.recovery)) return [{}, jobs]
         if (job.isBackgrounded) return [{ info: snapshot(job) }, jobs]
         const next = yield* markBackground(job)
-        return [{ info: snapshot(next), backgrounded: job.backgrounded }, new Map(jobs).set(id, next)]
+        return [
+          { info: snapshot(next.job), backgrounded: job.backgrounded, background: next.background },
+          new Map(jobs).set(id, next.job),
+        ]
       }),
     )
     if (result.info && result.backgrounded) yield* Deferred.succeed(result.backgrounded, result.info)
+    if (result.background?.recovery.kind === "subagent" && result.background.status !== "running")
+      yield* notifyBackgroundSettled(result.background)
     return result.info
   })
 
@@ -370,9 +405,9 @@ export const make = Effect.gen(function* () {
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
       Effect.fnUntraced(function* (jobs): Effect.fn.Return<
-        readonly [Required<BackgroundResult>[], Map<string, Active>]
+        readonly [{ info: Info; backgrounded: Deferred.Deferred<Info> }[], Map<string, Active>]
       > {
-        const results: Required<BackgroundResult>[] = []
+        const results: { info: Info; backgrounded: Deferred.Deferred<Info> }[] = []
         const next = new Map(jobs)
         for (const [id, job] of jobs) {
           if (job.info.status !== "running") continue
@@ -380,8 +415,8 @@ export const make = Effect.gen(function* () {
           if (input.type !== undefined && job.info.type !== input.type) continue
           if (!job.blockingSessions.has(input.sessionID)) continue
           const updated = yield* markBackground(job)
-          results.push({ info: snapshot(updated), backgrounded: job.backgrounded })
-          next.set(id, updated)
+          results.push({ info: snapshot(updated.job), backgrounded: job.backgrounded })
+          next.set(id, updated.job)
         }
         return [results, next]
       }),
@@ -430,8 +465,16 @@ export const make = Effect.gen(function* () {
             completed_at,
           },
         }
-        yield* persistBackground(next)
-        return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]
+        const background = yield* persistBackground(next)
+        return [
+          {
+            info: snapshot(next),
+            done: job.done,
+            scope: job.scope,
+            ...(next.isBackgrounded && background ? { background } : {}),
+          },
+          new Map(jobs).set(id, next),
+        ]
       }),
     )
     if (result.info && result.done) yield* Deferred.succeed(result.done, result.info)
@@ -483,6 +526,12 @@ export const make = Effect.gen(function* () {
     },
   )
 
+  const onBackgroundSettled: Interface["onBackgroundSettled"] = (listener) =>
+    Effect.sync(() => {
+      state.backgroundListeners.add(listener)
+      return Effect.sync(() => state.backgroundListeners.delete(listener))
+    })
+
   return Service.of({
     get,
     start,
@@ -495,6 +544,7 @@ export const make = Effect.gen(function* () {
     activeSessions,
     cancel,
     pendingBackground,
+    onBackgroundSettled,
     completeBackground,
   })
 })

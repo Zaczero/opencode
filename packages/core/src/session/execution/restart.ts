@@ -154,7 +154,15 @@ export const layer = (options?: Options) =>
         })
 
         if (background.status !== "running") {
-          yield* notify(background)
+          const messages =
+            background.status === "completed"
+              ? yield* store.context(recovery.childSessionID).pipe(Effect.orDie)
+              : undefined
+          const assistant = messages?.findLast(
+            (message) =>
+              message.type === "assistant" && message.time.completed !== undefined && message.error === undefined,
+          )
+          yield* notify(assistant ? { ...background, output: SubagentCompletion.text(assistant) } : background)
           return
         }
         if (yield* execution.isActive(recovery.childSessionID)) return
@@ -167,6 +175,7 @@ export const layer = (options?: Options) =>
           id: background.id,
           type: "subagent",
           title: recovery.description,
+          metadata: { sessionID: recovery.parentSessionID, childID: recovery.childSessionID },
           notificationID: background.notificationID,
           recovery,
           run: execution.resume(recovery.childSessionID).pipe(
@@ -181,11 +190,33 @@ export const layer = (options?: Options) =>
           ),
         })
         yield* jobs.background(background.id)
-        yield* jobs.wait({ id: background.id }).pipe(
-          Effect.flatMap((result) => (result.info ? notify(result.info) : Effect.void)),
-          Effect.forkIn(scope),
+      })
+
+      const waitForChildBackground = Effect.fnUntraced(function* (childID: SessionSchema.ID) {
+        while (yield* jobs.awaitOwned(childID)) {
+          yield* sessions.wait(childID)
+        }
+      })
+
+      const deliverSettledSubagent = Effect.fnUntraced(function* (background: Job.Background) {
+        if (background.status === "running" || background.recovery.kind !== "subagent") return
+        const recovery = background.recovery
+        // The child is idle between its own background jobs. Keep the waiter in the process scope rather
+        // than the dispatch location, then report only after all child-owned work has drained.
+        yield* waitForChildBackground(recovery.childSessionID).pipe(
+          Effect.andThen(recoverSubagent(background, recovery, new Set())),
+          Effect.forkIn(scope, { startImmediately: true }),
         )
       })
+
+      // Location-scoped plugins can be evicted while work they dispatched is still running. Delivery is
+      // process-owned so the terminal marker cannot outlive the observer that must acknowledge it.
+      const unsubscribe = yield* jobs.onBackgroundSettled((background) =>
+        deliverSettledSubagent(background).pipe(
+          Effect.catchCause((cause) => Effect.logError("failed to deliver background completion", { cause })),
+        ),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
 
       return Service.of({
         resumeSuspendedSessions: Effect.gen(function* () {

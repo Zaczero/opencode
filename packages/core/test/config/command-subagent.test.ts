@@ -13,6 +13,7 @@ import { Model } from "@opencode-ai/core/model"
 import { Provider } from "@opencode-ai/core/provider"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Session } from "@opencode-ai/core/session"
+import { SessionRestart } from "@opencode-ai/core/session/execution/restart"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { LayerNode } from "@opencode-ai/util/effect/layer-node"
 import { Global } from "@opencode-ai/util/global"
@@ -25,7 +26,7 @@ const llmLayer = TestLLM.testLayer({ fallback: TestLLM.text("Review complete", "
 const it = testEffect(
   Layer.merge(
     llmLayer,
-    AppNodeBuilder.build(LayerNode.group([Session.node, LocationServiceMap.node]), [
+    AppNodeBuilder.build(LayerNode.group([Session.node, SessionRestart.node, LocationServiceMap.node]), [
       Global.node.replace(tempGlobalLayer),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),

@@ -46,6 +46,10 @@ export const Input = Schema.Struct({
   sessionID: Schema.optionalKey(SessionSchema.ID).annotate({
     description: "Child session to continue with its conversation intact. Omit to start a new child conversation",
   }),
+  directory: Schema.optionalKey(Schema.String).annotate({
+    description:
+      "Starting directory for a new child. Relative paths resolve from this session; omit to inherit this session's directory. Ignored when continuing a child",
+  }),
 })
 
 export const Output = Schema.Struct({
@@ -220,10 +224,18 @@ export const Plugin = {
                     title: input.description,
                     agent: Agent.ID.make(input.agent),
                     model,
+                    ...(input.directory === undefined ? {} : { directory: input.directory }),
                   })
                   .pipe(
                     Effect.mapError(
-                      (error) => new ToolFailure({ message: `Parent session not found: ${context.sessionID}`, error }),
+                      (error) =>
+                        new ToolFailure({
+                          message:
+                            input.directory === undefined
+                              ? `Parent session not found: ${context.sessionID}`
+                              : `Subagent directory is unavailable: ${input.directory}`,
+                          error,
+                        }),
                     ),
                   ))
 

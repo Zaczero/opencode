@@ -109,7 +109,7 @@ describe("LocationActivity eviction", () => {
   ] as const) {
     const newWork = admission !== "none"
     it.effect(
-      `interrupts ${count} waiting executions before eviction (${admission} session admitted during cleanup)`,
+      `preserves ${count} waiting executions until user interruption (${admission} session admitted during cleanup)`,
       () =>
         Effect.gen(function* () {
           const db = (yield* Database.Service).db
@@ -176,6 +176,9 @@ describe("LocationActivity eviction", () => {
           // Human input produces no durable activity while the question is pending.
           yield* TestClock.adjust("1 minute")
           yield* TestClock.adjust("62 minutes")
+          expect(yield* forms.list()).toEqual(pending)
+          expect(interrupted).toEqual([])
+          yield* Effect.forEach(sessionIDs, (sessionID) => execution.interrupt(sessionID))
           // Interruption has cancelled each question, but slow cleanup still owns the graph.
           expect(Array.from(yield* execution.active).toSorted()).toEqual(sessionIDs.toSorted())
           expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual([ref])
@@ -193,7 +196,7 @@ describe("LocationActivity eviction", () => {
           expect(Array.from(yield* execution.active)).toEqual(newWork ? [newcomer] : [])
           expect(yield* store.listSuspended()).toEqual(newWork ? [newcomer] : [])
           expect(interrupted.toSorted((a, b) => a.sessionID.localeCompare(b.sessionID))).toEqual(
-            sessionIDs.map((sessionID) => ({ sessionID, reason: "inactivity" })),
+            sessionIDs.map((sessionID) => ({ sessionID, reason: "user" })),
           )
           expect(Array.from(yield* RcMap.keys(map.rcMap))).toEqual(newWork ? [ref] : [])
           if (newWork) {

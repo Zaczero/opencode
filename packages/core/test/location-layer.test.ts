@@ -79,6 +79,34 @@ const itWithActivity = testEffect(
 )
 
 describe("LocationServiceMap", () => {
+  itWithActivity.effect("does not evict a Location while its services are in use", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const locations = yield* LocationServiceMap.Service
+        const ref = Location.Ref.make({ directory: AbsolutePath.make("/active-project") })
+        const acquired = yield* Deferred.make<Location.Interface>()
+        const release = yield* Deferred.make<void>()
+        const lease = yield* Location.Service.pipe(
+          Effect.tap((location) => Deferred.succeed(acquired, location)),
+          Effect.andThen(Deferred.await(release)),
+          Effect.provide(locations.get(ref)),
+          Effect.forkScoped({ startImmediately: true }),
+        )
+        const first = yield* Deferred.await(acquired)
+
+        yield* TestClock.adjust("61 minutes")
+        expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([ref])
+        const second = yield* Location.Service.pipe(Effect.provide(locations.get(ref)), Effect.scoped)
+        expect(second).toBe(first)
+
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(lease)
+        yield* TestClock.adjust("1 minute")
+        expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([])
+      }),
+    ),
+  )
+
   for (const failure of ["file", "permissions", "config reference"] as const) {
     for (const invalidate of [false, true]) {
       // The file-path fixture boots on Windows rather than failing during
@@ -492,6 +520,8 @@ describe("LocationServiceMap", () => {
             "shell",
             "skill",
             "subagent",
+            "subagent_list",
+            "subagent_output",
             "webfetch",
             "websearch",
             "write",
@@ -511,6 +541,8 @@ describe("LocationServiceMap", () => {
             "shell",
             "skill",
             "subagent",
+            "subagent_list",
+            "subagent_output",
             "webfetch",
             "websearch",
             "write",

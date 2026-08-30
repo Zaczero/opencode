@@ -103,7 +103,7 @@ describe("provider error classification", () => {
     ).toEqual(["QuotaExceeded", "ProviderInternal", "InvalidRequest"])
   })
 
-  test("keeps unknown and malformed provider payloads non-retryable", () => {
+  test("keeps unknown and malformed provider payloads unclassified", () => {
     expect(classifyProviderFailure({ message: '{"error":{"message":"no_kv_space"}}' })._tag).toBe("UnknownProvider")
     expect(classifyProviderFailure({ message: '{"type":"error","error":{"code":123}}' })._tag).toBe("UnknownProvider")
     expect(classifyProviderFailure({ message: "not-json" })._tag).toBe("UnknownProvider")

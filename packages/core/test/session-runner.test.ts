@@ -11,6 +11,7 @@ import {
   InvalidProviderOutputError,
   InvalidRequestError,
   RateLimitError,
+  UnknownProviderError,
 } from "@opencode-ai/ai"
 import * as OpenAIChat from "@opencode-ai/ai/protocols/openai-chat"
 import { TestLLM } from "@opencode-ai/ai/testing"
@@ -605,6 +606,11 @@ const invalidRequest = () =>
 const rateLimited = (retryAfterMs?: number) =>
   new AIError({
     reason: new RateLimitError({ message: "Rate limited", retryAfterMs }),
+  })
+
+const unknownProviderFailure = () =>
+  new AIError({
+    reason: new UnknownProviderError({ message: "Unrecognized provider failure" }),
   })
 
 const setupOverflowRecovery = Effect.gen(function* () {
@@ -4899,6 +4905,22 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("retries an unrecognized provider failure before output", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      yield* admit(session, "Retry unknown provider failure")
+      yield* TestLLM.push(Stream.fail(unknownProviderFailure()), TestLLM.text("Recovered", "unknown-retry-success"))
+
+      const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* TestLLM.wait(1)
+      yield* TestClock.adjust("2400 millis")
+      yield* Fiber.join(run)
+
+      expect(requests).toHaveLength(2)
+      expect(yield* recordedEventTypes(sessionID)).toContain("session.retry.scheduled.1")
+    }),
+  )
+
   it.effect("does not start another physical attempt after interruption during retry backoff", () =>
     Effect.gen(function* () {
       const session = yield* setup
@@ -5277,28 +5299,38 @@ describe("SessionRunnerLLM", () => {
         LLMEvent.textStart({ id: "mixed-partial" }),
         LLMEvent.textDelta({ id: "mixed-partial", text: "Partial" }),
       )
-      yield* TestLLM.push(Stream.fail(failure), partial, Stream.fail(failure), partial, partial)
+      yield* TestLLM.push(
+        Stream.fail(failure),
+        partial,
+        Stream.fail(failure),
+        partial,
+        Stream.fail(failure),
+        partial,
+        partial,
+      )
       const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
       const identities: SessionMessage.ID[] = []
-      for (const delay of [2_400, 4_800, 9_600, 19_200]) {
+      for (const delay of [2_400, 4_800, 9_600, 19_200, 38_400, 76_800]) {
         identities.push(yield* Queue.take(scheduled))
         yield* TestClock.adjust(delay)
       }
       expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-      expect(requests).toHaveLength(5)
+      expect(requests).toHaveLength(7)
       expect(identities[0]).toBe(identities[1])
       expect(identities[2]).toBe(identities[3])
+      expect(identities[4]).toBe(identities[5])
       expect(identities[0]).not.toBe(identities[2])
+      expect(identities[2]).not.toBe(identities[4])
       const messages = yield* session.context(sessionID)
-      expect(messages.filter((message) => message.type === "assistant")).toHaveLength(3)
-      expect(messages.filter((message) => message.type === "synthetic")).toHaveLength(2)
+      expect(messages.filter((message) => message.type === "assistant")).toHaveLength(4)
+      expect(messages.filter((message) => message.type === "synthetic")).toHaveLength(3)
       const events = yield* recordedEventTypes(sessionID)
-      expect(events.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(4)
-      expect(events.filter((type) => type === "session.step.failed.1")).toHaveLength(3)
+      expect(events.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(6)
+      expect(events.filter((type) => type === "session.step.failed.1")).toHaveLength(4)
     }),
   )
 
-  it.effect("stops incomplete stream continuations after five total attempts", () =>
+  it.effect("stops incomplete stream continuations after seven total attempts", () =>
     Effect.gen(function* () {
       const session = yield* setup
       yield* admit(session, "Exhaust partial continuations")
@@ -5314,19 +5346,19 @@ describe("SessionRunnerLLM", () => {
 
       const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
       yield* TestLLM.wait(1)
-      for (const [index, delay] of [2_400, 4_800, 9_600, 19_200].entries()) {
+      for (const [index, delay] of [2_400, 4_800, 9_600, 19_200, 38_400, 76_800].entries()) {
         yield* TestClock.adjust(delay)
         yield* TestLLM.wait(index + 2)
       }
       expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-      expect(requests).toHaveLength(5)
+      expect(requests).toHaveLength(7)
       const context = yield* session.context(sessionID)
-      expect(context.filter((message) => message.type === "assistant")).toHaveLength(5)
-      expect(context.filter((message) => message.type === "synthetic")).toHaveLength(4)
+      expect(context.filter((message) => message.type === "assistant")).toHaveLength(7)
+      expect(context.filter((message) => message.type === "synthetic")).toHaveLength(6)
     }),
   )
 
-  it.effect("stops after five total retry attempts", () =>
+  it.effect("stops after seven total attempts", () =>
     Effect.gen(function* () {
       const session = yield* setup
       yield* admit(session, "Exhaust retries")
@@ -5335,12 +5367,12 @@ describe("SessionRunnerLLM", () => {
 
       const run = yield* session.resume(sessionID).pipe(Effect.forkChild)
       yield* TestLLM.wait(1)
-      for (const [index, delay] of [2_400, 4_800, 9_600, 19_200].entries()) {
+      for (const [index, delay] of [2_400, 4_800, 9_600, 19_200, 38_400, 76_800].entries()) {
         yield* TestClock.adjust(delay)
         yield* TestLLM.wait(index + 2)
       }
       expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-      expect(requests).toHaveLength(5)
+      expect(requests).toHaveLength(7)
 
       const database = (yield* Database.Service).db
       const retries = yield* database
@@ -5355,13 +5387,17 @@ describe("SessionRunnerLLM", () => {
         [4_800, 7_200],
         [11_200, 16_800],
         [24_000, 36_000],
+        [49_600, 74_400],
+        [100_800, 151_200],
       ].entries()) {
         expect(retries[index]?.data.at).toBeGreaterThanOrEqual(range[0]!)
         expect(retries[index]?.data.at).toBeLessThanOrEqual(range[1]!)
       }
-      expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.step.started.1")).toHaveLength(5)
+      expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.step.started.1")).toHaveLength(7)
       const assistant = requireAssistant(yield* session.context(sessionID))
       expect(yield* recordedStepSettlementEvents(sessionID, assistant.id)).toMatchObject([
+        { type: "session.step.started.1" },
+        { type: "session.step.started.1" },
         { type: "session.step.started.1" },
         { type: "session.step.started.1" },
         { type: "session.step.started.1" },

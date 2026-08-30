@@ -129,11 +129,12 @@ describe("toSessionError", () => {
     })
   })
 
-  test("retries only rate limits, provider-internal failures, and transport failures", () => {
+  test("retries transient and unrecognized provider failures", () => {
     const eligible = [
       llm(new RateLimitError({ message: "rate" })),
       llm(new ProviderInternalError({ message: "internal" })),
       llm(new TransportError({ message: "transport", transport: "http", operation: "request" })),
+      llm(new UnknownProviderError({ message: "unknown" })),
     ]
     const ineligible = [
       llm(new AuthenticationError({ message: "auth", kind: "invalid" })),
@@ -149,11 +150,10 @@ describe("toSessionError", () => {
           model: ModelID.make("model"),
         }),
       ),
-      llm(new UnknownProviderError({ message: "unknown" })),
     ]
 
-    expect(eligible.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true])
-    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false, false, false, false, false, false])
+    expect(eligible.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true, true])
+    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false, false, false, false, false])
   })
 
   test("retries transport failures only when delivery is absent or not sent", () => {

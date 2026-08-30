@@ -26,12 +26,13 @@ export function isRetryable(error: AIError) {
       return error.reason.delivery === undefined || error.reason.delivery === "not-sent"
     case "InvalidProviderOutput":
       return error.reason.classification === "incomplete-stream"
+    case "UnknownProvider":
+      return true
     case "Authentication":
     case "QuotaExceeded":
     case "ContentPolicy":
     case "InvalidRequest":
     case "NoRoute":
-    case "UnknownProvider":
       return false
     default: {
       const exhaustive: never = error.reason
@@ -47,7 +48,7 @@ const retryAfter = (input: Input) => {
 }
 
 export const schedule = (bus: Bus.Interface, sessionID: SessionSchema.ID) =>
-  Schedule.max([Schedule.exponential("2 seconds"), Schedule.recurs(4)]).pipe(
+  Schedule.max([Schedule.exponential("2 seconds"), Schedule.recurs(6)]).pipe(
     Schedule.jittered,
     Schedule.setInputType<Input>(),
     Schedule.modifyDelay(({ input, duration: delay }) => {

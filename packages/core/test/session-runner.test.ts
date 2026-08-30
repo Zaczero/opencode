@@ -642,6 +642,11 @@ const rateLimited = (retryAfterMs?: number) =>
     reason: new RateLimitError({ message: "Rate limited", retryAfterMs }),
   })
 
+const unknownProviderFailure = () =>
+  new AIError({
+    reason: new UnknownProviderError({ message: "Unrecognized provider failure" }),
+  })
+
 const setupOverflowRecovery = Effect.fnUntraced(function* (s: Scenario) {
   yield* s.llm.push(TestLLM.text("Earlier answer", "text-earlier"))
   yield* s.runPrompt("Earlier question ".repeat(700))
@@ -2501,8 +2506,8 @@ describe("SessionRunnerLLM", () => {
     const compaction = yield* s.session.compact({ sessionID })
     yield* s.resume
 
-    expect(attempts).toEqual([2, 3, 4, 5])
-    expect(s.requests).toHaveLength(6)
+    expect(attempts).toEqual([2, 3, 4, 5, 6, 7])
+    expect(s.requests).toHaveLength(8)
     expect((yield* s.messages).find((message) => message.id === compaction.id)).toMatchObject({
       status: "failed",
       error: { type: "provider.transport", message: "Provider unavailable" },
@@ -5333,28 +5338,37 @@ describe("SessionRunnerLLM", () => {
         LLMEvent.textStart({ id: "mixed-partial" }),
         LLMEvent.textDelta({ id: "mixed-partial", text: "Partial" }),
       )
-      yield* s.llm.push(Stream.fail(failure), partial, Stream.fail(failure), partial, partial)
+      yield* s.llm.push(
+        Stream.fail(failure),
+        partial,
+        Stream.fail(failure),
+        partial,
+        Stream.fail(failure),
+        partial,
+        partial,
+      )
       const run = yield* s.resume.pipe(Effect.forkChild)
       const identities: SessionMessage.ID[] = []
-      for (const delay of [2_400, 4_800, 9_600, 19_200]) {
+      for (const delay of [2_400, 4_800, 9_600, 19_200, 38_400, 76_800]) {
         identities.push(yield* Queue.take(scheduled))
         yield* TestClock.adjust(delay)
       }
       expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-      expect(s.requests).toHaveLength(5)
+      expect(s.requests).toHaveLength(7)
       expect(identities[0]).toBe(identities[1])
       expect(identities[2]).toBe(identities[3])
+      expect(identities[4]).toBe(identities[5])
       expect(identities[0]).not.toBe(identities[2])
       const messages = yield* s.context
-      expect(messages.filter((message) => message.type === "assistant")).toHaveLength(3)
-      expect(messages.filter((message) => message.type === "synthetic")).toHaveLength(2)
+      expect(messages.filter((message) => message.type === "assistant")).toHaveLength(4)
+      expect(messages.filter((message) => message.type === "synthetic")).toHaveLength(3)
       const events = yield* recordedEventTypes(sessionID)
-      expect(events.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(4)
-      expect(events.filter((type) => type === "session.step.failed.1")).toHaveLength(3)
+      expect(events.filter((type) => type === "session.retry.scheduled.1")).toHaveLength(6)
+      expect(events.filter((type) => type === "session.step.failed.1")).toHaveLength(4)
     },
   )
 
-  scenario("stops incomplete stream continuations after five total attempts", function* (s) {
+  scenario("stops incomplete stream continuations after seven total attempts", function* (s) {
     yield* s.admit("Exhaust partial continuations")
     const failure = incompleteStream()
     yield* s.llm.always(
@@ -5368,30 +5382,30 @@ describe("SessionRunnerLLM", () => {
 
     const scheduled = yield* subscribeRetries(s)
     const run = yield* s.resume.pipe(Effect.forkChild)
-    for (const delay of [2_400, 4_800, 9_600, 19_200]) {
+    for (const delay of [2_400, 4_800, 9_600, 19_200, 38_400, 76_800]) {
       yield* Queue.take(scheduled)
       yield* TestClock.adjust(delay)
     }
     expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-    expect(s.requests).toHaveLength(5)
+    expect(s.requests).toHaveLength(7)
     const context = yield* s.context
-    expect(context.filter((message) => message.type === "assistant")).toHaveLength(5)
-    expect(context.filter((message) => message.type === "synthetic")).toHaveLength(4)
+    expect(context.filter((message) => message.type === "assistant")).toHaveLength(7)
+    expect(context.filter((message) => message.type === "synthetic")).toHaveLength(6)
   })
 
-  scenario("stops after five total retry attempts", function* (s) {
+  scenario("stops after seven total retry attempts", function* (s) {
     yield* s.admit("Exhaust retries")
     const failure = providerUnavailable()
     yield* s.llm.always(Stream.fail(failure))
 
     const scheduled = yield* subscribeRetries(s)
     const run = yield* s.resume.pipe(Effect.forkChild)
-    for (const delay of [2_400, 4_800, 9_600, 19_200]) {
+    for (const delay of [2_400, 4_800, 9_600, 19_200, 38_400, 76_800]) {
       yield* Queue.take(scheduled)
       yield* TestClock.adjust(delay)
     }
     expect(yield* Fiber.join(run).pipe(Effect.flip)).toBe(failure)
-    expect(s.requests).toHaveLength(5)
+    expect(s.requests).toHaveLength(7)
 
     const retries = yield* s.db
       .select({ data: EventTable.data })
@@ -5405,13 +5419,17 @@ describe("SessionRunnerLLM", () => {
       [4_800, 7_200],
       [11_200, 16_800],
       [24_000, 36_000],
+      [49_600, 74_400],
+      [100_800, 151_200],
     ].entries()) {
       expect(retries[index]?.data.at).toBeGreaterThanOrEqual(range[0]!)
       expect(retries[index]?.data.at).toBeLessThanOrEqual(range[1]!)
     }
-    expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.step.started.1")).toHaveLength(5)
+    expect((yield* recordedEventTypes(sessionID)).filter((type) => type === "session.step.started.1")).toHaveLength(7)
     const assistant = requireAssistant(yield* s.context)
     expect(yield* recordedStepSettlementEvents(sessionID, assistant.id)).toMatchObject([
+      { type: "session.step.started.1" },
+      { type: "session.step.started.1" },
       { type: "session.step.started.1" },
       { type: "session.step.started.1" },
       { type: "session.step.started.1" },

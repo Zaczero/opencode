@@ -165,7 +165,7 @@ describe("toSessionError", () => {
     ]
 
     expect(eligible.map(SessionRunnerRetry.isRetryable)).toEqual([true, true, true, true])
-    expect(ineligible.map(SessionRunnerRetry.isRetryable)).toEqual([false, false, false, false, false, false, false])
+    for (const error of ineligible) expect(SessionRunnerRetry.isRetryable(error)).toBe(false)
   })
 
   test("retries transport failures only when delivery is absent or not sent", () => {

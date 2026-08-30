@@ -68,7 +68,7 @@ const retryAfter = (input: Input) => {
   return undefined
 }
 
-const schedule = Schedule.max([Schedule.exponential("2 seconds"), Schedule.recurs(4)]).pipe(
+const schedule = Schedule.max([Schedule.exponential("2 seconds"), Schedule.recurs(6)]).pipe(
   Schedule.jittered,
   Schedule.setInputType<Input>(),
   Schedule.modifyDelay(({ input, duration: delay }) => {

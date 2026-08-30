@@ -1,6 +1,6 @@
 export * as LocationActivity from "./location-activity.js"
 
-import { Clock, Context, Duration, Effect, Layer, RcMap, Schema } from "effect"
+import { Clock, Context, Duration, Effect, Layer, MutableHashMap, Option, RcMap, Schema } from "effect"
 import { Bus } from "./bus.js"
 import { Location } from "./location.js"
 import { LocationServiceMap } from "./location-service-map.js"
@@ -25,6 +25,16 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
       const touch = (ref: Location.Ref) =>
         Effect.sync(() => {
           entries.set(key(ref), { ref, expiresAt: clock.currentTimeMillisUnsafe() + timeToLive })
+        })
+      // Explicit invalidation removes an RcMap entry even while callers retain its old generation. Expiry is
+      // different: wait for every scoped user to release it so later requests cannot boot a parallel generation.
+      const invalidateIdle = (ref: Location.Ref) =>
+        Effect.suspend(() => {
+          const state = locations.rcMap.state
+          if (state._tag === "Closed") return Effect.succeed(false)
+          const current = MutableHashMap.get(state.map, ref)
+          if (Option.isSome(current) && current.value.refCount > 0) return Effect.succeed(false)
+          return locations.invalidate(ref).pipe(Effect.as(true))
         })
 
       const unsubscribe = yield* bus.listen(
@@ -55,13 +65,17 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
         const expired = Array.from(entries.values()).filter((entry) => entry.expiresAt <= now)
         yield* Effect.forEach(
           expired,
-          (entry) => {
-            entries.delete(key(entry.ref))
-            return Effect.logInfo("location services evicted", {
-              directory: entry.ref.directory,
-              workspaceID: entry.ref.workspaceID,
-            }).pipe(Effect.andThen(locations.invalidate(entry.ref)))
-          },
+          (entry) =>
+            invalidateIdle(entry.ref).pipe(
+              Effect.flatMap((invalidated) => {
+                if (!invalidated) return Effect.void
+                entries.delete(key(entry.ref))
+                return Effect.logInfo("location services evicted", {
+                  directory: entry.ref.directory,
+                  workspaceID: entry.ref.workspaceID,
+                })
+              }),
+            ),
           { discard: true },
         )
       }).pipe(Effect.forever, Effect.forkScoped)

@@ -9,7 +9,7 @@ import { ClientProvider } from "../../../src/context/client"
 import { ThemeProvider } from "../../../src/context/theme"
 import { Keymap } from "../../../src/context/keymap"
 import { ConfigProvider } from "../../../src/config"
-import { ToastProvider } from "../../../src/ui/toast"
+import { Toast, ToastProvider } from "../../../src/ui/toast"
 import { emptyThemeSource, tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -108,7 +108,10 @@ async function mountForm(
             <ClientProvider api={createApi(transport.fetch)}>
               <DataProvider directory={process.cwd()}>
                 <ThemeProvider mode="dark" source={emptyThemeSource}>
-                  <ToastProvider>{response ? <CurrentForm /> : <FormPrompt form={form} />}</ToastProvider>
+                  <ToastProvider>
+                    {response ? <CurrentForm /> : <FormPrompt form={form} />}
+                    <Toast />
+                  </ToastProvider>
                 </ThemeProvider>
               </DataProvider>
             </ClientProvider>
@@ -135,7 +138,7 @@ function mountRecoveringForm(root: string, response: { reply?: 404 | 409; cancel
   )
 }
 
-test("restores the composer when terminal-form revalidation fails", async () => {
+test("reports a missing form when terminal-form revalidation fails", async () => {
   await using tmp = await tmpdir()
   const prompt = await mountRecoveringForm(tmp.path, { reply: 404, syncFailure: true })
   try {
@@ -143,13 +146,16 @@ test("restores the composer when terminal-form revalidation fails", async () => 
     await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
 
     expect(prompt.replies).toHaveLength(1)
+    const frame = prompt.app.captureCharFrame().replace(/\s+/g, " ")
+    expect(frame).toContain("This request is no longer active")
+    expect(frame).toContain("was not submitted")
   } finally {
     prompt.app.renderer.destroy()
   }
 })
 
 for (const status of [404, 409] as const) {
-  test(`restores the composer after a terminal ${status} reply`, async () => {
+  test(`${status === 404 ? "reports a missing form" : "restores the composer"} after a terminal ${status} reply`, async () => {
     await using tmp = await tmpdir()
     const prompt = await mountRecoveringForm(tmp.path, { reply: status })
     try {
@@ -157,14 +163,20 @@ for (const status of [404, 409] as const) {
       await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
 
       expect(prompt.replies).toHaveLength(1)
-      expect(prompt.app.captureCharFrame()).not.toContain("Form not found")
+      const frame = prompt.app.captureCharFrame().replace(/\s+/g, " ")
+      if (status === 404) {
+        expect(frame).toContain("This request is no longer active")
+        expect(frame).toContain("was not submitted")
+      } else {
+        expect(frame).not.toContain("This request is no longer active")
+      }
       expect(prompt.app.captureCharFrame()).not.toContain("Form already settled")
     } finally {
       prompt.app.renderer.destroy()
     }
   })
 
-  test(`restores the composer after a terminal ${status} cancellation`, async () => {
+  test(`${status === 404 ? "reports a missing form" : "restores the composer"} after a terminal ${status} cancellation`, async () => {
     await using tmp = await tmpdir()
     const prompt = await mountRecoveringForm(tmp.path, { cancel: status })
     try {
@@ -172,7 +184,13 @@ for (const status of [404, 409] as const) {
       await prompt.app.waitForFrame((frame) => frame.includes("Composer ready"))
 
       expect(prompt.cancellations).toHaveLength(1)
-      expect(prompt.app.captureCharFrame()).not.toContain("Form not found")
+      const frame = prompt.app.captureCharFrame().replace(/\s+/g, " ")
+      if (status === 404) {
+        expect(frame).toContain("This request is no longer active")
+        expect(frame).toContain("could not be dismissed")
+      } else {
+        expect(frame).not.toContain("This request is no longer active")
+      }
       expect(prompt.app.captureCharFrame()).not.toContain("Form already settled")
     } finally {
       prompt.app.renderer.destroy()

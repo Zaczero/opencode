@@ -11,7 +11,7 @@ import {
 } from "@opentui/core"
 import open from "open"
 import { useTheme, useThemes } from "../../context/theme"
-import type { FormAnswer, FormField, FormValue } from "@opencode-ai/client"
+import { isFormNotFoundError, type FormAnswer, type FormField, type FormValue } from "@opencode-ai/client"
 import { useData, type FormWithLocation } from "../../context/data"
 import { useClipboard } from "../../context/clipboard"
 import { SplitBorder } from "../../ui/border"
@@ -245,7 +245,7 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   function reply(answer: FormAnswer) {
     void data.session.form
       .reply({ sessionID: props.form.sessionID, formID: props.form.id, answer }, props.form.location)
-      .catch(showError)
+      .catch((error) => showError(error, "Your response was not submitted."))
   }
 
   function replySingle(field: FormAnswerField, value: FormValue) {
@@ -443,10 +443,14 @@ export function FormPrompt(props: { form: FormWithLocation }) {
   function cancel() {
     void data.session.form
       .cancel({ sessionID: props.form.sessionID, formID: props.form.id }, props.form.location)
-      .catch(showError)
+      .catch((error) => showError(error, "The request could not be dismissed."))
   }
 
-  function showError(error: unknown) {
+  function showError(error: unknown, missing = "The request could not be completed.") {
+    if (isFormNotFoundError(error)) {
+      toast.show({ variant: "error", message: `This request is no longer active. ${missing}` })
+      return
+    }
     setStore("error", errorMessage(error))
   }
 

@@ -318,12 +318,16 @@ export function createData(config: CreateDataInput) {
   function settleForm(input: FormCancelInput, ref: LocationRef | undefined, request: Promise<void>) {
     return request
       .catch((error: unknown) => {
-        if ((!isFormNotFoundError(error) && !isFormAlreadySettledError(error)) || error.id !== input.formID) throw error
+        if (isFormAlreadySettledError(error) && error.id === input.formID) return undefined
+        if (isFormNotFoundError(error) && error.id === input.formID) return error
+        throw error
       })
-      .then(() => {
-        if (!removeForm(input.sessionID, input.formID, ref)) return
-        result.session.form.invalidate(input.sessionID, ref)
-        void result.session.form.sync(input.sessionID, ref).catch(() => undefined)
+      .then((missing) => {
+        if (removeForm(input.sessionID, input.formID, ref)) {
+          result.session.form.invalidate(input.sessionID, ref)
+          void result.session.form.sync(input.sessionID, ref).catch(() => undefined)
+        }
+        if (missing) throw missing
       })
   }
 

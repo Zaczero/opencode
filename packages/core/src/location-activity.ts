@@ -1,12 +1,10 @@
 export * as LocationActivity from "./location-activity.js"
 
-import { Clock, Context, Duration, Effect, Layer, RcMap, Schema } from "effect"
+import { Clock, Context, Duration, Effect, Layer, MutableHashMap, Option, RcMap, Schema } from "effect"
 import { Bus } from "./bus.js"
 import { Location } from "./location.js"
 import { LocationServiceMap } from "./location-service-map.js"
 import { SessionEvent } from "./session/event.js"
-import { SessionExecution } from "./session/execution.js"
-import { SessionStore } from "./session/store.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 
 const isSessionEvent = Schema.is(SessionEvent.Durable)
@@ -21,14 +19,22 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
       const clock = yield* Clock.Clock
       const bus = yield* Bus.Service
       const locations = yield* LocationServiceMap.Service
-      const execution = yield* SessionExecution.Service
-      const sessions = yield* SessionStore.Service
       const timeToLive = Duration.toMillis(options.timeToLive ?? "60 minutes")
       const entries = new Map<string, { readonly ref: Location.Ref; expiresAt: number }>()
       const key = (ref: Location.Ref) => `${LocationServiceMap.canonical(ref).directory}\0${ref.workspaceID ?? ""}`
       const touch = (ref: Location.Ref) =>
         Effect.sync(() => {
           entries.set(key(ref), { ref, expiresAt: clock.currentTimeMillisUnsafe() + timeToLive })
+        })
+      // Explicit invalidation removes an RcMap entry even while callers retain its old generation. Expiry is
+      // different: wait for every scoped user to release it so later requests cannot boot a parallel generation.
+      const invalidateIdle = (ref: Location.Ref) =>
+        Effect.suspend(() => {
+          const state = locations.rcMap.state
+          if (state._tag === "Closed") return Effect.succeed(false)
+          const current = MutableHashMap.get(state.map, ref)
+          if (Option.isSome(current) && current.value.refCount > 0) return Effect.succeed(false)
+          return locations.invalidate(ref).pipe(Effect.as(true))
         })
 
       const unsubscribe = yield* bus.listen(
@@ -54,36 +60,19 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
         const now = clock.currentTimeMillisUnsafe()
         const expired = Array.from(entries.values()).filter((entry) => entry.expiresAt <= now)
         if (expired.length === 0) return
-        const active = yield* Effect.forEach(yield* execution.active, (sessionID) => sessions.get(sessionID))
         yield* Effect.forEach(
           expired,
           (entry) =>
-            Effect.gen(function* () {
-              const owners = active.flatMap((session) =>
-                session && key(session.location) === key(entry.ref) ? [session] : [],
-              )
-              // Invalidation only detaches the cache entry; borrowers retain the old
-              // graph. Stop its executions and settle tool cleanup before detaching it.
-              yield* Effect.forEach(
-                owners,
-                (session) => execution.interrupt(session.id, { reason: "inactivity", awaitSettlement: true }),
-                {
-                  discard: true,
-                  concurrency: "unbounded",
-                },
-              )
-              const remaining = yield* Effect.forEach(yield* execution.active, (sessionID) => sessions.get(sessionID))
-              // New work admitted during cleanup may now own the cached graph.
-              if (remaining.some((session) => session && key(session.location) === key(entry.ref))) {
-                yield* touch(entry.ref)
-                return
-              }
-              entries.delete(key(entry.ref))
-              yield* Effect.logInfo("location services evicted", {
-                directory: entry.ref.directory,
-                workspaceID: entry.ref.workspaceID,
-              }).pipe(Effect.andThen(locations.invalidate(entry.ref)))
-            }),
+            invalidateIdle(entry.ref).pipe(
+              Effect.flatMap((invalidated) => {
+                if (!invalidated) return Effect.void
+                entries.delete(key(entry.ref))
+                return Effect.logInfo("location services evicted", {
+                  directory: entry.ref.directory,
+                  workspaceID: entry.ref.workspaceID,
+                })
+              }),
+            ),
           { discard: true, concurrency: "unbounded" },
         )
       }).pipe(Effect.forever, Effect.forkScoped)
@@ -96,5 +85,5 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
 export const node = makeGlobalNode({
   service: Service,
   layer: layer(),
-  deps: [Bus.node, LocationServiceMap.node, SessionExecution.node, SessionStore.node],
+  deps: [Bus.node, LocationServiceMap.node],
 })

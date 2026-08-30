@@ -39,7 +39,7 @@ const it = testEffect(
 )
 
 it.live(
-  "idle eviction ends the browser attachment and permits a fresh attachment",
+  "a scoped browser attachment retains its location until disconnect, then idle eviction permits reattachment",
   () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
@@ -63,9 +63,15 @@ it.live(
         Effect.timeout("5 seconds"),
       )
 
-      // Real idle cleanup must end the long-lived request, not leave a second registry behind it.
-      expect(yield* Fiber.join(pending).pipe(Effect.timeout("10 seconds"))).toMatchObject({ type: "rpc.unavailable" })
-      expect(yield* RcMap.has(locations.rcMap, LocationServiceMap.canonical(ref))).toBe(false)
+      // Outlive the two-second time to live: the attachment still holds its generation.
+      yield* Effect.sleep("3 seconds")
+      expect(pending.pollUnsafe()).toBeUndefined()
+      expect(yield* RcMap.has(locations.rcMap, LocationServiceMap.canonical(ref))).toBe(true)
+      yield* Fiber.interrupt(pending)
+      yield* RcMap.has(locations.rcMap, LocationServiceMap.canonical(ref)).pipe(
+        Effect.repeat({ until: (held) => !held, schedule: Schedule.spaced("50 millis") }),
+        Effect.timeout("10 seconds"),
+      )
       expect(yield* rpc.state(state).pipe(Effect.flip)).toMatchObject({ type: "rpc.unavailable" })
 
       const replacement = yield* locations.contextEffect(ref)

@@ -64,6 +64,30 @@ describe("Job", () => {
     }),
   )
 
+  it.live("restarts a terminal job under the same identifier", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const id = "job_restarted"
+      const owner = SessionSchema.ID.make("ses_restarted")
+      const first = yield* jobs.start({ id, type: "test", run: Effect.succeed("first") })
+      expect(yield* jobs.wait({ id: first.id })).toMatchObject({ info: { status: "completed", output: "first" } })
+
+      const latch = yield* Deferred.make<void>()
+      const second = yield* jobs.start({
+        id,
+        type: "test",
+        metadata: { sessionID: owner },
+        run: Deferred.await(latch).pipe(Effect.as("second")),
+      })
+      expect(yield* jobs.get(id)).toMatchObject({ status: "running" })
+      expect(yield* jobs.activeSessions).toEqual(new Set([owner]))
+
+      yield* Deferred.succeed(latch, undefined)
+      expect(yield* jobs.wait({ id: second.id })).toMatchObject({ info: { status: "completed", output: "second" } })
+      expect(yield* jobs.activeSessions).toEqual(new Set())
+    }),
+  )
+
   it.live("returns finished from a blocking wait when completion wins", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service

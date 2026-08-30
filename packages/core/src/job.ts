@@ -62,8 +62,13 @@ type Active = {
   recovery?: Recovery
 }
 
+type Registry = {
+  active: Map<string, Active>
+  terminal: Map<string, Active>
+}
+
 type State = {
-  jobs: SynchronizedRef.SynchronizedRef<Map<string, Active>>
+  jobs: SynchronizedRef.SynchronizedRef<Registry>
   backgroundListeners: Set<(background: Background) => Effect.Effect<void>>
   scope: Scope.Scope
 }
@@ -159,6 +164,25 @@ function snapshot(job: Active): Info {
   }
 }
 
+function lookup(registry: Registry, id: string) {
+  return registry.active.get(id) ?? registry.terminal.get(id)
+}
+
+function setActive(registry: Registry, id: string, job: Active): Registry {
+  const active = new Map(registry.active).set(id, job)
+  // Terminal history serves late get/wait calls and grows for the process lifetime. Mutate it only while the
+  // registry lock is held instead of copying the whole history on every job transition.
+  registry.terminal.delete(id)
+  return { active, terminal: registry.terminal }
+}
+
+function setTerminal(registry: Registry, id: string, job: Active): Registry {
+  const active = new Map(registry.active)
+  active.delete(id)
+  registry.terminal.set(id, job)
+  return { active, terminal: registry.terminal }
+}
+
 function errorText(error: unknown) {
   if (error instanceof Error) return error.message
   return String(error)
@@ -197,7 +221,7 @@ function backgroundRecord(job: Active): Background | undefined {
 export const make = Effect.gen(function* () {
   const kv = yield* KV.Service
   const state: State = {
-    jobs: yield* SynchronizedRef.make(new Map()),
+    jobs: yield* SynchronizedRef.make({ active: new Map(), terminal: new Map() }),
     backgroundListeners: new Set(),
     scope: yield* Scope.Scope,
   }
@@ -217,11 +241,10 @@ export const make = Effect.gen(function* () {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
-      Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [FinishResult, Map<string, Active>]> {
-        const job = jobs.get(id)
-        if (!job) return [{}, jobs]
-        if (job.token !== token) return [{}, jobs]
-        if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
+      Effect.fnUntraced(function* (registry): Effect.fn.Return<readonly [FinishResult, Registry]> {
+        const job = registry.active.get(id)
+        if (!job) return [{}, registry]
+        if (job.token !== token) return [{}, registry]
         const status: Exclude<Status, "running"> = Exit.isSuccess(exit)
           ? "completed"
           : Cause.hasInterruptsOnly(exit.cause)
@@ -246,7 +269,7 @@ export const make = Effect.gen(function* () {
             scope: job.scope,
             ...(next.isBackgrounded && background ? { background } : {}),
           },
-          new Map(jobs).set(id, next),
+          setTerminal(registry, id, next),
         ]
       }),
     )
@@ -259,7 +282,7 @@ export const make = Effect.gen(function* () {
   })
 
   const get: Interface["get"] = Effect.fn("Job.get")(function* (id) {
-    const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
+    const job = lookup(yield* SynchronizedRef.get(state.jobs), id)
     if (!job) return undefined
     return snapshot(job)
   })
@@ -273,10 +296,10 @@ export const make = Effect.gen(function* () {
         const backgrounded = yield* Deferred.make<Info>()
         const result = yield* SynchronizedRef.modifyEffect(
           state.jobs,
-          Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [StartResult, Map<string, Active>]> {
-            const existing = jobs.get(id)
-            if (existing?.info.status === "running") {
-              return [{ info: snapshot(existing) }, jobs]
+          Effect.fnUntraced(function* (registry): Effect.fn.Return<readonly [StartResult, Registry]> {
+            const existing = registry.active.get(id)
+            if (existing) {
+              return [{ info: snapshot(existing) }, registry]
             }
             const scope = yield* Scope.fork(state.scope, "parallel")
             const token = {}
@@ -298,7 +321,7 @@ export const make = Effect.gen(function* () {
               isBackgrounded: false,
               recovery: input.recovery,
             }
-            return [{ info: snapshot(job), scope, token }, new Map(jobs).set(id, job)]
+            return [{ info: snapshot(job), scope, token }, setActive(registry, id, job)]
           }),
         )
         if ("scope" in result)
@@ -314,7 +337,7 @@ export const make = Effect.gen(function* () {
   })
 
   const wait: Interface["wait"] = Effect.fn("Job.wait")(function* (input) {
-    const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
+    const job = lookup(yield* SynchronizedRef.get(state.jobs), input.id)
     if (!job) return { timedOut: false }
     if (job.info.status !== "running") return { info: snapshot(job), timedOut: false }
     if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
@@ -325,10 +348,10 @@ export const make = Effect.gen(function* () {
   })
 
   const removeBlock = Effect.fnUntraced(function* (input: BlockInput) {
-    yield* SynchronizedRef.update(state.jobs, (jobs) => {
-      const job = jobs.get(input.id)
-      if (!job || job.info.status !== "running" || job.isBackgrounded) return jobs
-      return new Map(jobs).set(input.id, {
+    yield* SynchronizedRef.update(state.jobs, (registry) => {
+      const job = registry.active.get(input.id)
+      if (!job || job.isBackgrounded) return registry
+      return setActive(registry, input.id, {
         ...job,
         blockingSessions: decrementSession(job.blockingSessions, input.sessionID),
       })
@@ -336,14 +359,16 @@ export const make = Effect.gen(function* () {
   })
 
   const block: Interface["block"] = Effect.fnUntraced(function* (input) {
-    const result = yield* SynchronizedRef.modify(state.jobs, (jobs): readonly [BlockStart, Map<string, Active>] => {
-      const job = jobs.get(input.id)
-      if (!job) return [{ type: "missing" }, jobs]
-      if (job.info.status !== "running") return [{ type: "finished", info: snapshot(job) }, jobs]
-      if (job.isBackgrounded) return [{ type: "backgrounded", info: snapshot(job) }, jobs]
+    const result = yield* SynchronizedRef.modify(state.jobs, (registry): readonly [BlockStart, Registry] => {
+      const job = registry.active.get(input.id)
+      if (!job) {
+        const terminal = registry.terminal.get(input.id)
+        return terminal ? [{ type: "finished", info: snapshot(terminal) }, registry] : [{ type: "missing" }, registry]
+      }
+      if (job.isBackgrounded) return [{ type: "backgrounded", info: snapshot(job) }, registry]
       return [
         { type: "wait", wait: { done: job.done, backgrounded: job.backgrounded } },
-        new Map(jobs).set(input.id, {
+        setActive(registry, input.id, {
           ...job,
           blockingSessions: incrementSession(job.blockingSessions, input.sessionID),
         }),
@@ -374,16 +399,16 @@ export const make = Effect.gen(function* () {
   const background: Interface["background"] = Effect.fn("Job.background")(function* (id) {
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
-      Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [BackgroundResult, Map<string, Active>]> {
-        const job = jobs.get(id)
+      Effect.fnUntraced(function* (registry): Effect.fn.Return<readonly [BackgroundResult, Registry]> {
+        const job = lookup(registry, id)
         // Recoverable work may finish before the caller backgrounds it.
-        if (!job || (job.info.status !== "running" && !job.recovery)) return [{}, jobs]
-        if (job.isBackgrounded) return [{ info: snapshot(job) }, jobs]
+        if (!job || (!registry.active.has(id) && !job.recovery)) return [{}, registry]
+        if (job.isBackgrounded) return [{ info: snapshot(job) }, registry]
         const next = yield* markBackground(job)
-        return [
-          { info: snapshot(next.job), backgrounded: job.backgrounded, background: next.background },
-          new Map(jobs).set(id, next.job),
-        ]
+        const updated = registry.active.has(id)
+          ? setActive(registry, id, next.job)
+          : setTerminal(registry, id, next.job)
+        return [{ info: snapshot(next.job), backgrounded: job.backgrounded, background: next.background }, updated]
       }),
     )
     if (result.info && result.backgrounded)
@@ -396,19 +421,18 @@ export const make = Effect.gen(function* () {
   const backgroundAll: Interface["backgroundAll"] = Effect.fn("Job.backgroundAll")(function* (input) {
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
-      Effect.fnUntraced(function* (jobs): Effect.fn.Return<
-        readonly [{ info: Info; backgrounded: Deferred.Deferred<Info> }[], Map<string, Active>]
+      Effect.fnUntraced(function* (registry): Effect.fn.Return<
+        readonly [{ info: Info; backgrounded: Deferred.Deferred<Info> }[], Registry]
       > {
         const results: { info: Info; backgrounded: Deferred.Deferred<Info> }[] = []
-        const next = new Map(jobs)
-        for (const [id, job] of jobs) {
-          if (job.info.status !== "running") continue
+        let next = registry
+        for (const [id, job] of registry.active) {
           if (job.isBackgrounded) continue
           if (input.type !== undefined && job.info.type !== input.type) continue
           if (!job.blockingSessions.has(input.sessionID)) continue
           const updated = yield* markBackground(job)
           results.push({ info: snapshot(updated.job), backgrounded: job.backgrounded })
-          next.set(id, updated.job)
+          next = setActive(next, id, updated.job)
         }
         return [results, next]
       }),
@@ -418,19 +442,18 @@ export const make = Effect.gen(function* () {
   })
 
   const running: Interface["running"] = Effect.fn("Job.running")(function* (sessionID) {
-    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const jobs = (yield* SynchronizedRef.get(state.jobs)).active
     const found: Info[] = []
-    for (const job of jobs.values())
-      if (job.info.status === "running" && job.info.metadata?.["sessionID"] === sessionID) found.push(snapshot(job))
+    for (const job of jobs.values()) if (job.info.metadata?.["sessionID"] === sessionID) found.push(snapshot(job))
     return found
   })
 
   const activeSessions: Interface["activeSessions"] = Effect.gen(function* () {
-    const jobs = yield* SynchronizedRef.get(state.jobs)
+    const jobs = (yield* SynchronizedRef.get(state.jobs)).active
     const sessions = new Set<SessionSchema.ID>()
     for (const job of jobs.values()) {
       const sessionID = job.info.metadata?.["sessionID"]
-      if (job.info.status === "running" && typeof sessionID === "string") sessions.add(SessionSchema.ID.make(sessionID))
+      if (typeof sessionID === "string") sessions.add(SessionSchema.ID.make(sessionID))
     }
     return sessions
   }).pipe(Effect.withSpan("Job.activeSessions"))
@@ -439,10 +462,12 @@ export const make = Effect.gen(function* () {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modifyEffect(
       state.jobs,
-      Effect.fnUntraced(function* (jobs): Effect.fn.Return<readonly [FinishResult, Map<string, Active>]> {
-        const job = jobs.get(id)
-        if (!job) return [{}, jobs]
-        if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
+      Effect.fnUntraced(function* (registry): Effect.fn.Return<readonly [FinishResult, Registry]> {
+        const job = registry.active.get(id)
+        if (!job) {
+          const terminal = registry.terminal.get(id)
+          return terminal ? [{ info: snapshot(terminal) }, registry] : [{}, registry]
+        }
         const next = {
           ...job,
           blockingSessions: new Map<SessionSchema.ID, number>(),
@@ -460,7 +485,7 @@ export const make = Effect.gen(function* () {
             scope: job.scope,
             ...(next.isBackgrounded && background ? { background } : {}),
           },
-          new Map(jobs).set(id, next),
+          setTerminal(registry, id, next),
         ]
       }),
     )

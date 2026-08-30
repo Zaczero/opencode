@@ -26,16 +26,23 @@ const backgroundResult = (sessionID: SessionSchema.ID) => ({
 })
 
 export const Input = Schema.Struct({
-  agent: Schema.String.annotate({ description: "The type of specialized agent to use for this task" }),
-  description: Schema.String.annotate({ description: "A short 3-5 word label for the task, displayed to the user" }),
-  prompt: Schema.String.annotate({ description: "The task for the subagent to perform" }),
+  agent: Schema.String.annotate({
+    description:
+      "Agent for this dispatch. Continuing a child can switch its agent, configured model, and reasoning settings in its existing session without restarting or losing the conversation",
+  }),
+  description: Schema.String.annotate({
+    description: "Short 3-5 word label for this dispatch, displayed to the user",
+  }),
+  prompt: Schema.String.annotate({
+    description: "Complete task for a new child, or additional instructions for a continued child",
+  }),
   sessionID: Schema.optionalKey(SessionSchema.ID).annotate({
     description:
-      "Continue a specific previous subagent conversation by passing its sessionID. Calls without a sessionID start a new conversation.",
+      "Child session to continue with its conversation intact. Omit to start a new child conversation",
   }),
   directory: Schema.optionalKey(Schema.String).annotate({
     description:
-      "Directory where a new subagent starts. Relative paths resolve from this session; omit to inherit this session's directory.",
+      "Starting directory for a new child. Relative paths resolve from this session; omit to inherit this session's directory. Ignored when continuing a child",
   }),
 })
 
@@ -45,15 +52,18 @@ export const Output = Schema.Struct({
   output: Schema.String,
 })
 
-const InspectInput = Schema.Struct({ sessionID: SessionSchema.ID })
+const InspectInput = Schema.Struct({
+  sessionID: SessionSchema.ID.annotate({ description: "Child session ID returned by subagent or subagent_list" }),
+})
 const InspectOutput = Schema.Struct({ output: Schema.String })
 const inspectResult = (output: string) => ({ output: { output }, content: output })
 export const description = [
   "Dispatch an agent into a child session to carry out a task.",
-  "A new child inherits nothing from this conversation; its prompt carries every fact it needs.",
-  "Every dispatch runs in the background and returns immediately. You are notified when it finishes.",
-  "Passing sessionID reaches an existing child, including one still running. Use it to steer work in flight instead of dispatching duplicate work.",
-  "To stop a child, tell it to stop now and abort the work.",
+  "Without sessionID, this starts a blank child whose prompt must carry every fact it needs.",
+  "With sessionID, this adds the prompt to the same child conversation and preserves its history.",
+  "Every call runs in the background and returns immediately. You are notified when it finishes; do not poll progress.",
+  "Continue a running child to steer it instead of dispatching duplicate work.",
+  "To stop a child, continue its session with a prompt telling it to stop now and abort the work.",
 ].join("\n")
 
 export const Plugin = {
@@ -249,7 +259,7 @@ export const Plugin = {
       draft.add({
         name: "subagent_output",
         options: { codemode: false, permission: name },
-        description: "Read a subagent's latest completed response after context loss.",
+        description: "Recover a child session's latest completed response after context loss.",
         input: InspectInput,
         output: InspectOutput,
         execute: (input, context) =>
@@ -272,7 +282,8 @@ export const Plugin = {
       draft.add({
         name: "subagent_list",
         options: { codemode: false, permission: name },
-        description: "List active subagents first, then recent inactive subagents launched from this session.",
+        description:
+          "Recover child session IDs after context loss. Lists active subagents first, then recent inactive subagents launched from this session.",
         input: Schema.Struct({}),
         output: InspectOutput,
         execute: (_input, context) =>

@@ -162,7 +162,20 @@ describe("SubagentTool", () => {
 
           const locations = yield* LocationServiceMap.Service
           const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
-          expect((yield* registry.snapshot()).definitions.map((tool) => tool.name)).toContain(SubagentTool.name)
+          const definitions = (yield* registry.snapshot()).definitions
+          const definition = definitions.find((tool) => tool.name === SubagentTool.name)
+          expect(definition?.description).toContain("same child conversation")
+          expect(definition?.description).toContain("do not poll progress")
+          const properties = (definition?.inputSchema as { properties?: Record<string, { description?: string }> })
+            .properties
+          expect(properties?.agent?.description).toContain("existing session without restarting")
+          expect(properties?.prompt?.description).toContain("additional instructions for a continued child")
+          expect(properties?.sessionID?.description).toContain("conversation intact")
+          expect(properties?.directory?.description).toContain("Ignored when continuing a child")
+          const output = definitions.find((tool) => tool.name === "subagent_output")
+          const list = definitions.find((tool) => tool.name === "subagent_list")
+          expect(output?.description).toContain("latest completed response after context loss")
+          expect(list?.description).toContain("Recover child session IDs after context loss")
           expect(
             yield* executeTool(registry, {
               sessionID: parent.id,
@@ -504,7 +517,7 @@ describe("SubagentTool", () => {
     ),
   )
 
-  it.live("rejects unrelated children and switches agents on continuation", () =>
+  it.live("rejects unrelated children and switches agents without losing context", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
@@ -526,6 +539,7 @@ describe("SubagentTool", () => {
             agent: Agent.ID.make("fallback"),
             model: parentModel,
           })
+          yield* sessions.prompt({ sessionID: switched.id, text: "retained context", resume: false })
           yield* withSubagent(parent.location)
           const locations = yield* LocationServiceMap.Service
           const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
@@ -564,6 +578,11 @@ describe("SubagentTool", () => {
             agent: "reviewer",
             model: childModel,
           })
+          expect(
+            (yield* sessions.inbox(switched.id)).flatMap((message) =>
+              message.type === "user" ? [message.payload.text] : [],
+            ),
+          ).toEqual(["retained context", expect.stringContaining("continue")])
           // Switching to an agent without a configured model keeps the child's current model.
           expect(yield* call(switched.id, "call-modelless-switch", "fallback")).toMatchObject({
             status: "completed",

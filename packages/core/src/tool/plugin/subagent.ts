@@ -27,16 +27,22 @@ const backgroundResult = (sessionID: SessionSchema.ID) => ({
 })
 
 export const Input = Schema.Struct({
-  agent: Schema.String.annotate({ description: "The type of specialized agent to use for this task" }),
-  description: Schema.String.annotate({ description: "A short 3-5 word label for the task, displayed to the user" }),
-  prompt: Schema.String.annotate({ description: "The task for the subagent to perform" }),
-  sessionID: Schema.optionalKey(SessionSchema.ID).annotate({
+  agent: Schema.String.annotate({
     description:
-      "Continue a specific previous subagent conversation by passing its sessionID. Calls without a sessionID start a new conversation.",
+      "Agent for this dispatch. Continuing a child can switch its agent, configured model, and reasoning settings in its existing session without restarting or losing the conversation",
+  }),
+  description: Schema.String.annotate({
+    description: "Short 3-5 word label for this dispatch, displayed to the user",
+  }),
+  prompt: Schema.String.annotate({
+    description: "Complete task for a new child, or additional instructions for a continued child",
+  }),
+  sessionID: Schema.optionalKey(SessionSchema.ID).annotate({
+    description: "Child session to continue with its conversation intact. Omit to start a new child conversation",
   }),
   directory: Schema.optionalKey(Schema.String).annotate({
     description:
-      "Directory where a new subagent starts. Relative paths resolve from this session; omit to inherit this session's directory.",
+      "Starting directory for a new child. Relative paths resolve from this session; omit to inherit this session's directory. Ignored when continuing a child",
   }),
 })
 
@@ -46,15 +52,18 @@ export const Output = Schema.Struct({
   output: Schema.String,
 })
 
-const InspectInput = Schema.Struct({ sessionID: SessionSchema.ID })
+const InspectInput = Schema.Struct({
+  sessionID: SessionSchema.ID.annotate({ description: "Child session ID returned by subagent or subagent_list" }),
+})
 const InspectOutput = Schema.Struct({ output: Schema.String })
 const inspectResult = (output: string) => ({ output: { output }, content: output })
 export const description = [
   "Dispatch an agent into a child session to carry out a task.",
-  "A new child inherits nothing from this conversation; its prompt carries every fact it needs.",
-  "Every dispatch runs in the background and returns immediately. You are notified when it finishes.",
-  "Passing sessionID reaches an existing child, including one still running. Use it to steer work in flight instead of dispatching duplicate work.",
-  "To stop a child, tell it to stop now and abort the work.",
+  "Without sessionID, this starts a blank child whose prompt must carry every fact it needs.",
+  "With sessionID, this adds the prompt to the same child conversation and preserves its history.",
+  "Every call runs in the background and returns immediately. You are notified when it finishes; do not poll progress.",
+  "Continue a running child to steer it instead of dispatching duplicate work.",
+  "To stop a child, continue its session with a prompt telling it to stop now and abort the work.",
 ].join("\n")
 
 export const Plugin = {
@@ -239,69 +248,71 @@ export const Plugin = {
               })),
             ),
         })
-      draft.add({
-        name: "subagent_output",
-        options: { codemode: false, permission: name },
-        description: "Read a subagent's latest completed response after context loss.",
-        input: InspectInput,
-        output: InspectOutput,
-        execute: (input, context) =>
-          Effect.gen(function* () {
-            const child = yield* ownChild(context.sessionID, input.sessionID)
-            if (!child)
-              return inspectResult(`Cannot read subagent ${input.sessionID}: it was not launched from this session.`)
-            const active = yield* sessions.active
-            const output = yield* latestAssistantText(input.sessionID).pipe(Effect.orElseSucceed(() => NO_TEXT))
-            return inspectResult(
-              [
-                `subagent ${input.sessionID} (${child.title ?? "subagent"})`,
-                active.has(input.sessionID) ? "Still running; the latest completed response follows." : "Not running.",
-                "",
-                output,
-              ].join("\n"),
-            )
-          }),
-      })
-      draft.add({
-        name: "subagent_list",
-        options: { codemode: false, permission: name },
-        description: "List active subagents first, then recent inactive subagents launched from this session.",
-        input: Schema.Struct({}),
-        output: InspectOutput,
-        execute: (_input, context) =>
-          Effect.gen(function* () {
-            const [children, active] = yield* Effect.all([
-              sessions.list({ parentID: context.sessionID }),
-              sessions.active,
-            ])
-            if (children.data.length === 0)
-              return inspectResult("No subagents have been launched from this session.")
-            const rows = (child: SessionSchema.Info) => {
-              const state = active.has(child.id)
-                ? "running"
-                : child.outcome === "succeeded"
-                  ? "completed"
-                  : child.outcome === "failed"
-                    ? "failed"
-                    : child.outcome === "interrupted"
-                      ? "cancelled"
-                      : "not running; terminal outcome unavailable"
-              return `- ${child.id} -- ${child.title ?? "subagent"}${child.agent ? ` (${child.agent})` : ""}, ${state}`
-            }
-            const running = children.data.filter((child) => active.has(child.id))
-            const inactive = children.data.filter((child) => !active.has(child.id))
-            const recent = inactive.slice(0, Math.max(0, MAX_LISTED_SUBAGENTS - running.length))
-            const hidden = inactive.length - recent.length
-            return inspectResult(
-              [
-                "Subagents launched from this session:",
-                ...(running.length > 0 ? ["", "Active:", ...running.map(rows)] : []),
-                ...(recent.length > 0 ? ["", "Recent:", ...recent.map(rows)] : []),
-                ...(hidden > 0 ? ["", `${hidden} more inactive subagent${hidden === 1 ? "" : "s"} not shown.`] : []),
-              ].join("\n"),
-            )
-          }),
-      })
+        draft.add({
+          name: "subagent_output",
+          options: { codemode: false, permission: name },
+          description: "Recover a child session's latest completed response after context loss.",
+          input: InspectInput,
+          output: InspectOutput,
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              const child = yield* ownChild(context.sessionID, input.sessionID)
+              if (!child)
+                return inspectResult(`Cannot read subagent ${input.sessionID}: it was not launched from this session.`)
+              const active = yield* sessions.active
+              const output = yield* latestAssistantText(input.sessionID).pipe(Effect.orElseSucceed(() => NO_TEXT))
+              return inspectResult(
+                [
+                  `subagent ${input.sessionID} (${child.title ?? "subagent"})`,
+                  active.has(input.sessionID)
+                    ? "Still running; the latest completed response follows."
+                    : "Not running.",
+                  "",
+                  output,
+                ].join("\n"),
+              )
+            }),
+        })
+        draft.add({
+          name: "subagent_list",
+          options: { codemode: false, permission: name },
+          description:
+            "Recover child session IDs after context loss. Lists active subagents first, then recent inactive subagents launched from this session.",
+          input: Schema.Struct({}),
+          output: InspectOutput,
+          execute: (_input, context) =>
+            Effect.gen(function* () {
+              const [children, active] = yield* Effect.all([
+                sessions.list({ parentID: context.sessionID }),
+                sessions.active,
+              ])
+              if (children.data.length === 0) return inspectResult("No subagents have been launched from this session.")
+              const rows = (child: SessionSchema.Info) => {
+                const state = active.has(child.id)
+                  ? "running"
+                  : child.outcome === "succeeded"
+                    ? "completed"
+                    : child.outcome === "failed"
+                      ? "failed"
+                      : child.outcome === "interrupted"
+                        ? "cancelled"
+                        : "not running; terminal outcome unavailable"
+                return `- ${child.id} -- ${child.title ?? "subagent"}${child.agent ? ` (${child.agent})` : ""}, ${state}`
+              }
+              const running = children.data.filter((child) => active.has(child.id))
+              const inactive = children.data.filter((child) => !active.has(child.id))
+              const recent = inactive.slice(0, Math.max(0, MAX_LISTED_SUBAGENTS - running.length))
+              const hidden = inactive.length - recent.length
+              return inspectResult(
+                [
+                  "Subagents launched from this session:",
+                  ...(running.length > 0 ? ["", "Active:", ...running.map(rows)] : []),
+                  ...(recent.length > 0 ? ["", "Recent:", ...recent.map(rows)] : []),
+                  ...(hidden > 0 ? ["", `${hidden} more inactive subagent${hidden === 1 ? "" : "s"} not shown.`] : []),
+                ].join("\n"),
+              )
+            }),
+        })
       })
       .pipe(Effect.orDie)
 

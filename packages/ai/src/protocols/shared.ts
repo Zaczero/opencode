@@ -1,7 +1,10 @@
 import { Buffer } from "node:buffer"
 import { Tool } from "@opencode-ai/schema/tool"
-import { Effect, Schema, Stream } from "effect"
-import * as Sse from "effect/unstable/encoding/Sse"
+import { Channel, Effect, Schema, Stream } from "effect"
+import { isArrayNonEmpty, type NonEmptyReadonlyArray } from "effect/Array"
+import type { Pull } from "effect/Pull"
+import { makeParser } from "effect/unstable/encoding/Sse"
+import type { Event as SseEvent } from "effect/unstable/encoding/Sse"
 import { Headers, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import {
   InvalidProviderOutputError,
@@ -205,6 +208,32 @@ export const errorText = (error: unknown) => {
   return "Unknown stream error"
 }
 
+// Sse.decode treats retry directives as terminal channel failures. Provider streams ignore them and continue,
+// so use the same parser with a channel that only emits events.
+const sseDecode = Channel.fromTransform((upstream: Pull<NonEmptyReadonlyArray<string>, AIError, unknown>, _scope) =>
+  Effect.sync(() => {
+    let output: SseEvent[] = []
+    const parser = makeParser((event) => {
+      if (event._tag === "Event") output.push(event)
+    })
+    const pump = Effect.flatMap(upstream, (chunks) => {
+      for (const chunk of chunks) {
+        const error = parser.feed(chunk)
+        if (error) return Effect.fail(eventError("sse", error.message, chunk, error))
+      }
+      return Effect.void
+    })
+    return Effect.suspend(function loop(): Pull<NonEmptyReadonlyArray<SseEvent>, AIError, unknown> {
+      if (isArrayNonEmpty(output)) {
+        const emitted = output
+        output = []
+        return Effect.succeed(emitted)
+      }
+      return Effect.flatMap(pump, loop)
+    })
+  }),
+)
+
 /**
  * `framing` step for Server-Sent Events. Decodes UTF-8, runs the SSE channel
  * decoder, optionally filters named events, and drops empty / `[DONE]`
@@ -219,23 +248,7 @@ export const sseFraming = (
 ): Stream.Stream<string, AIError> =>
   bytes.pipe(
     Stream.decodeText(),
-    Stream.mapAccumEffect(
-      () => {
-        const output: Sse.Event[] = []
-        return {
-          output,
-          parser: Sse.makeParser((event) => {
-            if (event._tag === "Event") output.push(event)
-          }),
-        }
-      },
-      (state, chunk) =>
-        Effect.gen(function* () {
-          const error = state.parser.feed(chunk)
-          if (error) return yield* eventError("sse", error.message, chunk, error)
-          return [state, state.output.splice(0)] as const
-        }),
-    ),
+    Stream.pipeThroughChannel(sseDecode),
     Stream.filter(
       (event) =>
         (events === undefined || events.has(event.event)) &&

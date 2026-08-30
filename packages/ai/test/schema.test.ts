@@ -145,6 +145,29 @@ describe("AI.Usage", () => {
     expect(Array.from(frames)).toEqual(["first\nsecond"])
   })
 
+  test("sseFraming emits every event from one upstream chunk", async () => {
+    const frames = await Effect.runPromise(
+      ProviderShared.sseFraming(
+        Stream.make(
+          new TextEncoder().encode(
+            ['data: {"first":true}', "", "retry: 1000", "", 'data: {"second":true}', "", "data: [DONE]", ""].join("\n"),
+          ),
+        ),
+      ).pipe(Stream.runCollect),
+    )
+
+    expect(Array.from(frames)).toEqual(['{"first":true}', '{"second":true}'])
+  })
+
+  test("sseFraming preserves upstream failures", async () => {
+    const failure = ProviderShared.eventError("upstream", "stream failed")
+    const error = await Effect.runPromise(
+      ProviderShared.sseFraming(Stream.fail(failure)).pipe(Stream.runCollect, Effect.flip),
+    )
+
+    expect(error).toBe(failure)
+  })
+
   test("visibleOutputTokens clamps reasoning > output to zero", () => {
     expect(new Usage({ outputTokens: 10, reasoningTokens: 4 }).visibleOutputTokens).toBe(6)
     expect(new Usage({ outputTokens: 10 }).visibleOutputTokens).toBe(10)

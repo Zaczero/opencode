@@ -104,6 +104,66 @@ test("Promise event subscriptions retain generated request options", async () =>
   expect(received.map((event) => (event as { readonly type: string }).type)).toEqual(["session.synthetic"])
 })
 
+test("Promise filtered subscriptions cancel their pending source", async () => {
+  const controller = new AbortController()
+  const started = Promise.withResolvers<void>()
+  let released = false
+  const host = createHost(
+    Stream.fromEffect(
+      Effect.acquireUseRelease(
+        Effect.sync(() => started.resolve()),
+        () => Effect.never,
+        () =>
+          Effect.sync(() => {
+            released = true
+          }),
+      ),
+    ),
+  )
+  await Effect.runPromise(
+    Effect.scoped(
+      fromPromise(
+        define({
+          id: "promise-event-cancellation",
+          setup: async (context) => {
+            const iterator = context.event
+              .subscribe({ types: ["session.synthetic"], signal: controller.signal })
+              [Symbol.asyncIterator]()
+            const pending = iterator.next()
+            const outcome = pending.then(
+              () => "completed",
+              () => "cancelled",
+            )
+            await started.promise
+            controller.abort()
+            await outcome
+          },
+        }),
+      ).effect(host),
+    ),
+  )
+  expect(released).toBe(true)
+})
+
+test("Promise plugins can snapshot executing sessions", async () => {
+  const executing = [{ sessionID: "ses_running", startedAt: 123 }]
+  const host = createHost(Stream.empty, Effect.succeed(executing))
+  const received: unknown[] = []
+
+  await Effect.runPromise(
+    Effect.scoped(
+      fromPromise(
+        define({
+          id: "promise-executing-sessions",
+          setup: async (context) => void received.push(await context.session.executing()),
+        }),
+      ).effect(host),
+    ),
+  )
+
+  expect(received).toEqual([executing])
+})
+
 function makeEvents() {
   return [
     SessionEvent.Synthetic.make({
@@ -129,7 +189,10 @@ function makeEvents() {
   ] as const
 }
 
-function createHost(events: ReturnType<Context["event"]["subscribe"]>) {
+function createHost(
+  events: ReturnType<Context["event"]["subscribe"]>,
+  executing: Context["session"]["executing"] = Effect.die("unused session.executing"),
+) {
   const unused = (..._args: never[]) => Effect.die("unused")
   return {
     app: { name: "test", version: "test", channel: "test" },
@@ -182,6 +245,7 @@ function createHost(events: ReturnType<Context["event"]["subscribe"]>) {
       hook: unused,
       create: unused,
       get: unused,
+      executing,
       switchAgent: unused,
       switchModel: unused,
       prompt: unused,

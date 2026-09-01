@@ -421,6 +421,7 @@ export const make = Effect.fn("PluginHost.make")(function* (plugin: Interface, p
             input?.location ?? Location.Ref.make({ directory: location.directory, workspaceID: location.workspaceID }),
         }),
       get: (input) => runtime.session.get(input.sessionID),
+      executing: runtime.session.executing,
       switchAgent: runtime.session.switchAgent,
       switchModel: runtime.session.switchModel,
       prompt: runtime.session.prompt,

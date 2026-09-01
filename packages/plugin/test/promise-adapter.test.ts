@@ -104,6 +104,25 @@ test("Promise event subscriptions retain generated request options", async () =>
   expect(received.map((event) => (event as { readonly type: string }).type)).toEqual(["session.synthetic"])
 })
 
+test("Promise plugins can snapshot executing sessions", async () => {
+  const executing = [{ sessionID: "ses_running", startedAt: 123 }]
+  const host = createHost(Stream.empty, Effect.succeed(executing))
+  const received: unknown[] = []
+
+  await Effect.runPromise(
+    Effect.scoped(
+      fromPromise(
+        define({
+          id: "promise-executing-sessions",
+          setup: async (context) => void received.push(await context.session.executing()),
+        }),
+      ).effect(host),
+    ),
+  )
+
+  expect(received).toEqual([executing])
+})
+
 function makeEvents() {
   return [
     SessionEvent.Synthetic.make({
@@ -129,7 +148,10 @@ function makeEvents() {
   ] as const
 }
 
-function createHost(events: ReturnType<Context["event"]["subscribe"]>) {
+function createHost(
+  events: ReturnType<Context["event"]["subscribe"]>,
+  executing: Context["session"]["executing"] = Effect.die("unused session.executing"),
+) {
   const unused = (..._args: never[]) => Effect.die("unused")
   return {
     app: { name: "test", version: "test", channel: "test" },
@@ -179,6 +201,7 @@ function createHost(events: ReturnType<Context["event"]["subscribe"]>) {
       hook: unused,
       create: unused,
       get: unused,
+      executing,
       switchAgent: unused,
       switchModel: unused,
       prompt: unused,

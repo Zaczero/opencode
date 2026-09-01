@@ -3,7 +3,7 @@ export * from "./session/schema.js"
 
 import { Cause, Effect, Layer, Schema, Context, RcMap, Stream, Scope } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
-import { and, asc, desc, eq, gt, isNull, like, lt, or, type SQL } from "drizzle-orm"
+import { and, asc, desc, eq, gt, inArray, isNull, like, lt, or, type SQL } from "drizzle-orm"
 import { Project } from "./project.js"
 import { Workspace } from "./workspace.js"
 import { Model } from "./model.js"
@@ -311,6 +311,8 @@ export interface Interface {
   readonly wait: (id: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly activeExecuting: Effect.Effect<ReadonlySet<SessionSchema.ID>>
+  /** Actual local model executions and their durable busy-period start times. */
+  readonly executing: Effect.Effect<ReadonlyArray<{ readonly sessionID: SessionSchema.ID; readonly startedAt: number }>>
   readonly background: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID, options?: { readonly continue?: boolean }) => Effect.Effect<boolean>
@@ -925,6 +927,19 @@ const layer = Layer.effect(
         return active
       }),
       activeExecuting: execution.active,
+      executing: Effect.gen(function* () {
+        const active = yield* execution.active
+        if (active.size === 0) return []
+        const rows = yield* db
+          .select({ sessionID: SessionTable.id, startedAt: SessionTable.time_suspended })
+          .from(SessionTable)
+          .where(inArray(SessionTable.id, Array.from(active)))
+          .all()
+          .pipe(Effect.orDie)
+        return rows.flatMap((row) =>
+          row.startedAt === null ? [] : [{ sessionID: SessionSchema.ID.make(row.sessionID), startedAt: row.startedAt }],
+        )
+      }),
       background: Effect.fn("Session.background")(function* (sessionID) {
         yield* result.get(sessionID)
         const backgrounded = yield* jobs.backgroundAll({ sessionID })

@@ -6,7 +6,7 @@ import type { PromptInput } from "@opencode-ai/schema/prompt-input"
 import type { Session } from "@opencode-ai/schema/session"
 import type { SessionInbox } from "@opencode-ai/schema/session-inbox"
 import type { SessionMessage } from "@opencode-ai/schema/session-message"
-import type { JsonSchema, Types } from "effect"
+import type { Effect, JsonSchema, Types } from "effect"
 import type { ModelHooks } from "./registration.js"
 
 export interface SessionPrompt {
@@ -98,5 +98,7 @@ export type SessionDomain = Pick<
   | "wait"
   | "context"
 > & {
+  /** Snapshot actual model executions with their durable busy-period start time. */
+  readonly executing: Effect.Effect<ReadonlyArray<{ readonly sessionID: string; readonly startedAt: number }>>
   readonly hook: ModelHooks<SessionHooks>
 }

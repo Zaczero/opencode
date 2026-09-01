@@ -384,7 +384,7 @@ describe("Job", () => {
       const background = yield* jobs.background(job.id)
 
       const running = (yield* jobs.pendingBackground).find((item) => item.id === job.id)
-      expect(running).toMatchObject({ id: job.id, recovery, status: "running" })
+      expect(running).toMatchObject({ id: job.id, startedAt: job.started_at, recovery, status: "running" })
       expect(running?.notificationID).toStartWith("msg_")
       expect(background?.notificationID).toBe(running?.notificationID)
 
@@ -507,9 +507,37 @@ describe("Job", () => {
 
       const current = yield* Job.make
       const marker = (yield* current.pendingBackground).find((item) => item.id === job.id)
-      expect(marker).toMatchObject({ id: job.id, status: "running" })
+      expect(marker).toMatchObject({ id: job.id, startedAt: job.started_at, status: "running" })
       if (!marker) return yield* Effect.die("background marker missing")
       yield* current.completeBackground(marker.notificationID)
+    }),
+  )
+
+  it.live("starts a fresh busy period for legacy background markers", () =>
+    Effect.gen(function* () {
+      const kv = yield* KV.Service
+      const notificationID = "msg_legacy_background"
+      yield* kv.set(`job.background/${notificationID}`, {
+        id: "ses_legacy_background",
+        notificationID,
+        recovery: {
+          kind: "subagent",
+          parentSessionID: "ses_legacy_parent",
+          childSessionID: "ses_legacy_background",
+          agent: "explore",
+          description: "Recover legacy work",
+        },
+        status: "running",
+      })
+      const before = Date.now()
+      const jobs = yield* Job.make
+      const marker = (yield* jobs.pendingBackground).find((item) => item.notificationID === notificationID)
+
+      expect(marker?.startedAt).toBeGreaterThanOrEqual(before)
+      expect(yield* kv.get(`job.background/${notificationID}`)).toMatchObject({
+        startedAt: marker?.startedAt,
+      })
+      if (marker) yield* jobs.completeBackground(marker.notificationID)
     }),
   )
 

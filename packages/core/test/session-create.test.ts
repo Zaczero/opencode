@@ -17,6 +17,7 @@ import { Bus } from "@opencode/core/bus"
 import { EventTable } from "@opencode/core/event/sql"
 import { Instructions } from "@opencode/core/instructions/index"
 import { Location } from "@opencode/core/location"
+import { Job } from "@opencode/core/job"
 import { Model } from "@opencode/core/model"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
@@ -49,6 +50,7 @@ const it = testEffect(
       SessionProjector.node,
       SessionStore.node,
       Session.node,
+      Job.node,
       SessionTransfer.node,
       InstructionEntry.node,
     ]),
@@ -421,6 +423,62 @@ describe("Session.create", () => {
       const child = yield* session.create({ parentID: parent.id, title: "child" })
 
       expect(child).toMatchObject({ parentID: parent.id, location })
+    }),
+  )
+
+  it.effect("reports only subagents with live work, including child-owned jobs after their own execution", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const jobs = yield* Job.Service
+      const parent = yield* sessions.create({ location })
+      const child = yield* sessions.create({ parentID: parent.id })
+      const grandchild = yield* sessions.create({ parentID: child.id })
+      const finished = yield* jobs.start({
+        id: child.id,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent.id,
+          childSessionID: child.id,
+          agent: "build",
+          description: "Child",
+        },
+        run: Effect.succeed("done"),
+      })
+      yield* jobs.background(child.id)
+      yield* jobs.wait({ id: child.id })
+      expect((yield* jobs.pendingBackground).find((job) => job.id === child.id)?.status).toBe("completed")
+      expect(yield* sessions.subagents).toEqual([])
+
+      const shell = yield* jobs.start({
+        id: "sh_child_progress",
+        type: "shell",
+        recovery: { kind: "shell", sessionID: child.id, shellID: "sh_child_progress", command: "gate" },
+        run: Effect.never,
+      })
+      yield* jobs.background(shell.id)
+      expect(yield* sessions.subagents).toEqual([{ sessionID: child.id, startedAt: finished.started_at }])
+
+      yield* jobs.cancel(shell.id)
+      const nested = yield* jobs.start({
+        id: grandchild.id,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: child.id,
+          childSessionID: grandchild.id,
+          agent: "build",
+          description: "Grandchild",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(grandchild.id)
+      expect(yield* sessions.subagents).toEqual([
+        { sessionID: child.id, startedAt: finished.started_at },
+        { sessionID: grandchild.id, startedAt: nested.started_at },
+      ])
+      yield* jobs.cancel(grandchild.id)
+      expect(yield* sessions.subagents).toEqual([])
     }),
   )
 

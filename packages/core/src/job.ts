@@ -7,9 +7,10 @@ import { KV } from "./kv.js"
 import { SessionMessage } from "./session/message.js"
 import { SessionSchema } from "./session/schema.js"
 
-const Background = Schema.Struct({
+const StoredBackground = Schema.Struct({
   id: Schema.String,
   notificationID: SessionMessage.ID,
+  startedAt: Schema.optionalKey(Schema.Number),
   recovery: Schema.Union([
     Schema.Struct({
       kind: Schema.Literal("shell"),
@@ -30,11 +31,12 @@ const Background = Schema.Struct({
   error: Schema.optionalKey(Schema.String),
 })
 
-export type Background = typeof Background.Type
+type StoredBackground = typeof StoredBackground.Type
+export type Background = Omit<StoredBackground, "startedAt"> & { readonly startedAt: number }
 export type Recovery = Background["recovery"]
 export type Status = Background["status"]
 
-const decodeBackground = Schema.decodeUnknownResult(Background)
+const decodeBackground = Schema.decodeUnknownResult(StoredBackground)
 const backgroundPrefix = "job.background/"
 const COMPLETED_LIMIT = 25
 
@@ -195,6 +197,7 @@ function backgroundRecord(job: Active): Background | undefined {
   return {
     id: job.info.id,
     notificationID: job.info.notificationID,
+    startedAt: job.info.started_at,
     recovery: job.recovery,
     status: job.info.status,
     ...(job.info.output !== undefined ? { output: job.info.output } : {}),
@@ -212,11 +215,15 @@ function backgroundRecord(job: Active): Background | undefined {
 export const make = Effect.gen(function* () {
   const kv = yield* KV.Service
   const deliveries = new Map<SessionMessage.ID, { background: Background; done: Deferred.Deferred<void> }>()
+  const recoveredAt = yield* Clock.currentTimeMillis
   let after: string | undefined
   do {
     const page = yield* kv.scan({ prefix: backgroundPrefix, after })
     for (const background of Array.filterMap(page.entries, (entry) => decodeBackground(entry.value))) {
-      deliveries.set(background.notificationID, { background, done: yield* Deferred.make<void>() })
+      const recovered: Background = { ...background, startedAt: background.startedAt ?? recoveredAt }
+      if (background.startedAt === undefined)
+        yield* kv.set(`${backgroundPrefix}${background.notificationID}`, recovered)
+      deliveries.set(recovered.notificationID, { background: recovered, done: yield* Deferred.make<void>() })
     }
     after = page.next
   } while (after)
@@ -544,7 +551,11 @@ export const make = Effect.gen(function* () {
     let after: string | undefined
     do {
       const page = yield* kv.scan({ prefix: backgroundPrefix, after })
-      recovered.push(...Array.filterMap(page.entries, (entry) => decodeBackground(entry.value)))
+      recovered.push(
+        ...Array.filterMap(page.entries, (entry) => decodeBackground(entry.value)).flatMap((background) =>
+          background.startedAt === undefined ? [] : [{ ...background, startedAt: background.startedAt }],
+        ),
+      )
       after = page.next
     } while (after)
     return recovered

@@ -189,5 +189,9 @@ export type SessionDomain = Pick<
   | "wait"
   | "context"
 > & {
+  /** Snapshot actual model executions with their durable busy-period start time. */
+  readonly executing: () => Promise<ReadonlyArray<{ readonly sessionID: string; readonly startedAt: number }>>
+  /** Snapshot background subagents still working, including child-owned jobs. */
+  readonly subagents: () => Promise<ReadonlyArray<{ readonly sessionID: string; readonly startedAt: number }>>
   readonly hook: ModelHooks<SessionHooks>
 }

@@ -172,7 +172,10 @@ export const { use: useSessionTabs, provider: SessionTabsProvider } = createSimp
           : members.some((id) => (data.session.form.list(id)?.length ?? 0) > 0)
             ? ("question" as const)
             : (false as const),
-        busy: members.some((id) => data.session.status(id) === "running" || data.session.pending.list(id).length > 0),
+        // Activity includes execution and background work. A pending inbox item alone is not work: a steer parked on an idle
+        // session (a restart-recovered shell notice, an abandoned prompt) waits for a turn that
+        // may never come, and a queued prompt flips the session to running on its own.
+        busy: members.some((id) => data.session.status(id) === "running"),
       }
     }
 

@@ -229,6 +229,42 @@ function admitted(sessionID: string, inboxID: string): OpenCodeEvent {
   }
 }
 
+function started(sessionID: string): OpenCodeEvent {
+  return {
+    id: `evt_started_${sessionID}`,
+    created: Date.now(),
+    type: "session.execution.started",
+    durable: { aggregateID: sessionID, seq: 0, version: 1 },
+    data: { sessionID },
+  } as OpenCodeEvent
+}
+
+test("an undelivered steer on an idle child does not keep the root tab busy", async () => {
+  const setup = await renderSessionTabs("root", { sessionParents: { child: "root" } })
+
+  try {
+    await wait(() => setup.tabs.tabs().some((tab) => tab.sessionID === "root"))
+    setup.emit({
+      id: "evt_orphan",
+      created: Date.now(),
+      type: "session.inbox.enqueued",
+      durable: { aggregateID: "child", seq: 0, version: 1 },
+      data: {
+        sessionID: "child",
+        inboxID: "msg_orphan",
+        item: { type: "synthetic", payload: { text: "<shell state=\"cancelled\" />" }, delivery: "steer" },
+      },
+    })
+    await wait(() => setup.data.session.pending.list("child").length === 1)
+    expect(setup.tabs.status("root").busy).toBe(false)
+
+    setup.emit(started("child"))
+    await wait(() => setup.tabs.status("root").busy)
+  } finally {
+    await setup.destroy()
+  }
+})
+
 test("loads persisted tab metadata concurrently on connect", async () => {
   let release!: () => void
   const sessionGate = new Promise<void>((resolve) => (release = resolve))
@@ -890,6 +926,9 @@ test("user prompt admissions pulse an already-busy background tab", async () => 
     await wait(() => setup.tabs.tabs().some((tab) => tab.sessionID === "background"))
     setup.route.navigate({ type: "session", sessionID: "active" })
     await wait(() => setup.tabs.current() === "active" && setup.tabs.tabs().length === 2)
+
+    setup.emit(started("background"))
+    await wait(() => setup.tabs.status("background").busy)
 
     setup.emit({
       id: "evt_context",

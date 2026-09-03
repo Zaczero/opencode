@@ -334,25 +334,35 @@ const layer = Layer.effect(
         Effect.map((sets) => new Map(sets.flat(2).map((item) => [item.directory, item] as const)).values().toArray()),
       )
       const removed = checked.filter((item) => !item.exists).map((item) => item.directory)
-      const result = yield* db
-        .transaction((tx) =>
-          Effect.all({
-            updated: Effect.forEach(discovered, (item) =>
-              ops.create(
-                {
-                  projectID: input.projectID,
-                  directory: item.directory,
-                  strategy: item.strategy,
-                },
-                tx,
-              ),
-            ),
-            removed: Effect.forEach(removed, (directory) => ops.remove(input.projectID, directory, tx)),
-          }),
-        )
-        .pipe(Effect.orDie)
+      // Only rows the listing disagrees with are written. A refresh runs on every location boot and almost
+      // always confirms what is stored, and each upsert costs a drizzle query build plus a statement: for
+      // a project with forty lanes that was the dominant cost of a boot that changed nothing.
+      const known = new Map(stored.map((item) => [item.directory, item.strategy]))
+      const stale = discovered.filter(
+        (item) => !known.has(item.directory) || known.get(item.directory) !== item.strategy,
+      )
+      const result =
+        stale.length === 0 && removed.length === 0
+          ? { updated: [], removed: [] }
+          : yield* db
+              .transaction((tx) =>
+                Effect.all({
+                  updated: Effect.forEach(stale, (item) =>
+                    ops.create(
+                      {
+                        projectID: input.projectID,
+                        directory: item.directory,
+                        strategy: item.strategy,
+                      },
+                      tx,
+                    ),
+                  ),
+                  removed: Effect.forEach(removed, (directory) => ops.remove(input.projectID, directory, tx)),
+                }),
+              )
+              .pipe(Effect.orDie)
       const changes = {
-        updated: discovered.filter((_, index) => result.updated[index]).map((item) => item.directory),
+        updated: stale.filter((_, index) => result.updated[index]).map((item) => item.directory),
         removed: removed.filter((_, index) => result.removed[index]),
       }
       yield* changed(input.projectID, changes.updated.length > 0 || changes.removed.length > 0)

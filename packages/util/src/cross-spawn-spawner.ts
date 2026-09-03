@@ -287,7 +287,7 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
     command: ChildProcess.StandardCommand,
     opts: NodeChildProcess.SpawnOptions,
   ) {
-    yield* Effect.logInfo("spawning process", { command: command.command, args: command.args, cwd: opts.cwd })
+    yield* Effect.logDebug("spawning process", { command: command.command, args: command.args, cwd: opts.cwd })
     return yield* launchProcess(command, opts)
   })
 

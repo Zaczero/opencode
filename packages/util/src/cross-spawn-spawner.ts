@@ -299,7 +299,7 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
     command: ChildProcess.StandardCommand,
     opts: NodeChildProcess.SpawnOptions,
   ) {
-    yield* Effect.logInfo("spawning process", { command: command.command, args: command.args, cwd: opts.cwd })
+    yield* Effect.logDebug("spawning process", { command: command.command, args: command.args, cwd: opts.cwd })
     const [proc, closed, exited] = yield* launchProcess(command, opts)
     const stopOutput = yield* Deferred.make<void>()
     // Register before process release so the deadline remains active during termination.

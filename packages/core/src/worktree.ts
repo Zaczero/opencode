@@ -313,16 +313,23 @@ const layer = Layer.effect(
         }
       }
       const removed = checked.filter((item) => !item.exists).map((item) => item.directory)
-      const changes = yield* db
-        .transaction((tx) =>
-          Effect.all({
-            updated: Effect.filter(Array.from(discovered.values()), (item) =>
-              ops.create(input.projectID, item, tx),
-            ).pipe(Effect.map((items) => items.map((item) => item.directory))),
-            removed: Effect.filter(removed, (directory) => ops.remove(input.projectID, directory, tx)),
-          }),
-        )
-        .pipe(Effect.orDie)
+      const known = new Map(stored.map((item) => [item.directory, item.strategy]))
+      const stale = Array.from(discovered.values()).filter(
+        (item) => !known.has(item.directory) || known.get(item.directory) !== item.strategy,
+      )
+      const changes =
+        stale.length === 0 && removed.length === 0
+          ? { updated: [], removed: [] }
+          : yield* db
+              .transaction((tx) =>
+                Effect.all({
+                  updated: Effect.filter(stale, (item) => ops.create(input.projectID, item, tx)).pipe(
+                    Effect.map((items) => items.map((item) => item.directory)),
+                  ),
+                  removed: Effect.filter(removed, (directory) => ops.remove(input.projectID, directory, tx)),
+                }),
+              )
+              .pipe(Effect.orDie)
       yield* changed(input.projectID, changes.updated.length > 0 || changes.removed.length > 0)
     }, Effect.scoped)
 

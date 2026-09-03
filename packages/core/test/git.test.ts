@@ -30,6 +30,8 @@ describe("Git", () => {
       expect(repository?.worktree).toBe(directory)
       expect(repository?.gitDirectory).toBe(AbsolutePath.make(path.join(directory, ".git")))
       expect(repository?.commonDirectory).toBe(repository?.gitDirectory)
+      // Asked again inside the memo window, discovery answers without spawning git: the same instance.
+      expect(yield* git.repo.discover(directory)).toBe(repository)
     }),
   )
 

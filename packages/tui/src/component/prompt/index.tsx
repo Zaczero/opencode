@@ -343,18 +343,20 @@ export function Prompt(props: PromptProps) {
   let promptPartTypeId = 0
   const event = useEvent()
 
-  event.on("tui.prompt.append", (evt, { workspace }) => {
-    if (workspace !== (currentLocation.current?.workspaceID ?? data.location.default().workspaceID)) return
-    if (!input || input.isDestroyed) return
-    input.insertText(evt.data.text)
-    setTimeout(() => {
-      // setTimeout is a workaround and needs to be addressed properly
+  onCleanup(
+    event.on("tui.prompt.append", (evt, { workspace }) => {
+      if (workspace !== (currentLocation.current?.workspaceID ?? data.location.default().workspaceID)) return
       if (!input || input.isDestroyed) return
-      input.getLayoutNode().markDirty()
-      input.gotoBufferEnd()
-      renderer.requestRender()
-    }, 0)
-  })
+      input.insertText(evt.data.text)
+      setTimeout(() => {
+        // setTimeout is a workaround and needs to be addressed properly
+        if (!input || input.isDestroyed) return
+        input.getLayoutNode().markDirty()
+        input.gotoBufferEnd()
+        renderer.requestRender()
+      }, 0)
+    }),
+  )
 
   createEffect(() => {
     if (!input || input.isDestroyed) return

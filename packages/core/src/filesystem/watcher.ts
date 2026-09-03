@@ -7,11 +7,23 @@ import { FileSystem } from "@opencode-ai/schema/filesystem"
 import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
 import { Cause, Context, Effect, Layer, PubSub, RcMap, Schema, Stream } from "effect"
 import { lazy } from "../util/lazy.js"
-import { watch as watchFileSystem } from "node:fs"
+import { unwatchFile, watchFile, type StatsListener } from "node:fs"
 import path from "path"
 import loadBinding from "./watcher-binding.js"
 
 const SUBSCRIBE_TIMEOUT_MS = 10_000
+/**
+ * File targets are polled, never handed to `node:fs.watch`, while the runtime is Bun 1.3.13. That release's
+ * watcher is a shim over the bundler's kqueue-oriented watcher: it opens every entry of the watched directory
+ * (path_watcher.zig, DirectoryRegisterTask) and `close()` only queues the descriptors for an eviction that
+ * runs on the next inotify event of the same watcher, so they are never released (measured: 12 to 54
+ * descriptors for a 40-file directory, and 54 after close). A long-lived service reached 11,000 open files,
+ * half of them in worktrees that no longer existed. Bun 1.3.14 rewrote the watcher to hold inotify watches
+ * only (oven-sh/bun#29952); once the toolchain is on that release this can go back to watching the parent
+ * directory. Until then a stat every half second per watched file costs 0.2% of a core for a hundred files,
+ * uses no descriptors, and survives the rename-over write every editor and git uses.
+ */
+const FILE_POLL_MS = 500
 export const Event = { Updated: FileSystem.Event.Changed }
 
 const watcher = lazy((): typeof import("@parcel/watcher") | undefined => {
@@ -130,7 +142,7 @@ export const layer = (options?: Options) =>
         const target = path.resolve(input.path)
         const ignore = [...new Set(input.type === "directory" ? (input.ignore ?? []) : [])].toSorted()
         return Effect.gen(function* () {
-          yield* Effect.logInfo("watcher subscribe", {
+          yield* Effect.logDebug("watcher subscribe", {
             path: target,
             type: input.type,
             ignores: ignore.length,
@@ -191,17 +203,13 @@ export const nativeLayer = Layer.succeed(
     subscribe: (input) => {
       if (input.type === "file") {
         return Effect.sync(() => {
-          const directory = path.dirname(input.target)
-          const subscription = watchFileSystem(directory, { recursive: false }, (_event, file) => {
-            if (file && path.resolve(directory, file.toString()) !== input.target) return
-            input.publish({ path: input.target, type: "update" } satisfies Update)
-          })
-          if ("on" in subscription && typeof subscription.on === "function") {
-            subscription.on("error", (error: unknown) =>
-              Effect.runFork(Effect.logError("watcher callback failed", { path: input.target, error })),
-            )
+          // A missing target stats as all zeros, so ino distinguishes appearance and disappearance.
+          const listener: StatsListener = (current, previous) => {
+            const type = current.ino === 0 ? "delete" : previous.ino === 0 ? "create" : "update"
+            input.publish({ path: input.target, type } satisfies Update)
           }
-          return { unsubscribe: () => Promise.resolve(subscription.close()), backend: "node" }
+          watchFile(input.target, { interval: FILE_POLL_MS, persistent: false }, listener)
+          return { unsubscribe: () => Promise.resolve(unwatchFile(input.target, listener)), backend: "poll" }
         })
       }
       return subscribeDirectory(watcher(), getBackend(), input.target, input.ignore, input.publish)
@@ -217,6 +225,8 @@ export function configured(options?: Options) {
 
 export const node = configured()
 
+let unsupportedReported = false
+
 function subscribeDirectory(
   native: typeof import("@parcel/watcher") | undefined,
   backend: ParcelWatcher.BackendType | undefined,
@@ -225,6 +235,10 @@ function subscribeDirectory(
   publish: (update: Update) => void,
 ): Effect.Effect<Subscription | undefined> {
   if (!native || !backend) {
+    // Said once per process: the verdict cannot change, and every location boot asks again for the same
+    // directories. Logged per attempt this was a hundred thousand lines of the same sentence.
+    if (unsupportedReported) return Effect.succeed(undefined)
+    unsupportedReported = true
     return Effect.logError("watcher backend not supported", { directory, platform: process.platform }).pipe(
       Effect.as(undefined),
     )

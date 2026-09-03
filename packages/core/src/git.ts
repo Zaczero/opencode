@@ -18,6 +18,9 @@ export class Repository extends Schema.Class<Repository>("Git.Repository")({
 
 // Included from $GIT_DIR/config via include.path (git >= 1.7.10); OpenCode owns
 // this file entirely, so updates are plain rewrites with no config parsing.
+const DISCOVER_MEMO_MS = 10_000
+const DISCOVER_MEMO_ENTRIES = 1024
+
 const snapshotConfigFile = "opencode.gitconfig"
 const snapshotConfigInclude = `[include]
 	path = ${snapshotConfigFile}
@@ -169,7 +172,23 @@ const layer = Layer.effect(
     const locked = <A, E, R>(repository: Repository, effect: Effect.Effect<A, E, R>) =>
       locks.withLock(repository.gitDirectory)(effect)
 
+    // Discovery is asked for the same directory in bursts: a location boot resolves its project, refreshes
+    // its worktrees, and targets its watcher, and every one of those spawns git for an answer that does not
+    // change between them. Measured at 55,000 spawns of one rev-parse over two days. A short memo turns a
+    // burst into one spawn; a directory that stops or starts being a repository is seen within the window.
+    const discovered = new Map<string, { at: number; repository: Repository | undefined }>()
     const discover = Effect.fn("Git.repo.discover")(function* (input: AbsolutePath) {
+      const now = Date.now()
+      const cached = discovered.get(input)
+      if (cached && now - cached.at < DISCOVER_MEMO_MS) return cached.repository
+      const repository = yield* locate(input)
+      if (discovered.size >= DISCOVER_MEMO_ENTRIES)
+        for (const [key, entry] of discovered) if (now - entry.at >= DISCOVER_MEMO_MS) discovered.delete(key)
+      discovered.set(input, { at: now, repository })
+      return repository
+    })
+
+    const locate = Effect.fn("Git.repo.locate")(function* (input: AbsolutePath) {
       const dotgit = yield* fs.up({ targets: [".git"], start: input, mode: "first" }).pipe(
         Effect.map((matches) => matches[0]),
         Effect.orElseSucceed(() => undefined),

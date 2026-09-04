@@ -35,14 +35,14 @@ describe("SkillPlugin.Plugin", () => {
         expect.objectContaining({
           id: "opencode",
           name: "OpenCode",
-          description: expect.stringContaining("any question about OpenCode itself"),
+          description: expect.stringContaining("developing OpenCode itself"),
         }),
       )
       expect(skills).toContainEqual(
         expect.objectContaining({
           id: "report",
           name: "Report",
-          description: expect.stringContaining("opencode issue"),
+          description: expect.stringContaining("prepare or file an OpenCode bug report"),
         }),
       )
       expect(report?.slash).toBe(true)

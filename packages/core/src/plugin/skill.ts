@@ -15,9 +15,9 @@ export const OpencodeContent = opencodeContent
 export const ReportContent = reportContent
 
 export const OpencodeDescription =
-  "Use this skill for any question about OpenCode itself, including how OpenCode works, using or configuring it, migrating from V1 to V2, troubleshooting it, developing plugins or integrations, using the OpenCode SDK, clients, server, or API, and contributing to the OpenCode codebase. Also use it for OpenCode agents, commands, skills, tools, permissions, MCP servers, providers, models, themes, keybinds, formatters, the CLI, TUI, desktop app, and web app."
+  "Use when explaining, configuring, extending, troubleshooting, or developing OpenCode itself, including V1-to-V2 migration, plugins, the SDK and API, agents and skills, providers and MCP, the background service, and terminal, desktop, or web clients. Not needed for ordinary programming merely performed through OpenCode."
 const REPORT_DESCRIPTION =
-  "Use when the user wants to report an opencode issue or bug. Collect standard diagnostics, add user-specific reproduction context, and publish the issue with GitHub CLI."
+  "Use when the user asks to prepare or file an OpenCode bug report, including diagnostics and reproduction details. Not for merely investigating a bug. Also load opencode for product-specific behavior and git when publishing to GitHub. Loading this skill does not authorize publication without the user's approval."
 
 export const Plugin = define({
   id: "opencode.skill",

@@ -308,12 +308,14 @@ const layer = Layer.effect(
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
         const loaded =
-          initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap((selection) => context.load(selection, history))))
+          initial ??
+          (yield* prepareContext(sessionID).pipe(Effect.flatMap((selection) => context.load(selection, history))))
         initial = undefined
         const compactionInput = {
           session: loaded.session,
           messages: loaded.messages,
           resolved: loaded.model,
+          resolveModel: context.resolveModel,
           prepare: context.prepare,
           prepareRequest: (resolved: SessionRunnerModel.Resolved) => requestForPrefix(loaded, resolved),
         }

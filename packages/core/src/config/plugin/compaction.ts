@@ -4,6 +4,7 @@ import { define } from "@opencode-ai/plugin/effect/plugin"
 import { Effect } from "effect"
 import { Config } from "../../config.js"
 import { SessionCompaction } from "../../session/compaction.js"
+import { Model } from "../../model.js"
 import { ConfigEntryObserver } from "./entry-observer.js"
 
 export const Plugin = define({
@@ -17,6 +18,15 @@ export const Plugin = define({
         if (entry.type !== "document" || !entry.info.compaction) continue
         draft.configure({
           ...(entry.info.compaction.auto === undefined ? {} : { auto: entry.info.compaction.auto }),
+          ...(entry.info.compaction.model === undefined
+            ? {}
+            : {
+                model: Model.Ref.make({
+                  providerID: entry.info.compaction.model.providerID,
+                  id: entry.info.compaction.model.model,
+                  variant: entry.info.compaction.model.variant,
+                }),
+              }),
           ...(entry.info.compaction.buffer === undefined ? {} : { buffer: entry.info.compaction.buffer }),
           ...(entry.info.compaction.keep?.tokens === undefined ? {} : { tokens: entry.info.compaction.keep.tokens }),
         })

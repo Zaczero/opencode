@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
 import { LLM, LLMClient, LLMEvent, LanguageModel, Message, SystemPart, type LLMRequest } from "@opencode-ai/ai"
-import { OpenAIChat } from "@opencode-ai/ai/protocols"
+import { OpenAIChat, OpenAIResponses } from "@opencode-ai/ai/protocols"
+import { compileRequest } from "@opencode-ai/ai/route/client"
+import { Model } from "@opencode-ai/core/model"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { llmClient } from "@opencode-ai/core/effect/app-node-platform"
@@ -337,6 +339,127 @@ it.effect("compaction preserves the complete request prefix without enabling too
     expect(requests[0].toolChoice?.type).toBe("none")
     expect(requests[0].toolChoice?.disableParallelToolUse).toBe(true)
     expect(requests[0].http?.headers?.["X-Session-Id"]).toBe(session.id)
+  }),
+)
+
+for (const mode of ["auto", "manual"] as const) {
+  for (const selection of ["unset", "same", "different-model", "different-variant"] as const) {
+    it.effect(`${mode} compaction uses ${selection} selection without changing the conversation model`, () =>
+      Effect.gen(function* () {
+        requests = []
+        const compaction = yield* SessionCompaction.Service
+        const modelRequests = yield* SessionModelRequest.Service
+        const store = yield* SessionStore.Service
+        const current = SessionRunnerModel.resolved(
+          LanguageModel.make({ id: "gpt-5.6-luna", provider: "openai", route: OpenAIResponses.route }),
+          { ...resolved, variant: Model.VariantID.make("xhigh") },
+        )
+        const chosen =
+          selection === "unset"
+            ? undefined
+            : Model.Ref.make({
+                ...current.ref,
+                id: Model.ID.make(selection === "different-model" ? "gpt-5.6-sol" : "gpt-5.6-luna"),
+                variant: Model.VariantID.make(selection === "different-variant" ? "low" : "xhigh"),
+              })
+        yield* compaction.transform((draft) => draft.configure({ model: chosen }))
+        const session = yield* insertSession(Session.ID.make(`ses_compaction_${mode}_${selection}`), {
+          model: current.ref,
+        })
+        const messages = [
+          {
+            id: SessionMessage.ID.create(),
+            type: "user",
+            text: "Earlier work",
+            time: { created: DateTime.makeUnsafe(0) },
+          },
+          {
+            id: SessionMessage.ID.create(),
+            type: "user",
+            text: "Latest request",
+            time: { created: DateTime.makeUnsafe(1) },
+          },
+        ] satisfies SessionMessage.Info[]
+        const prefix = LLM.request({
+          model: current.model,
+          system: "Stable conversation instructions",
+          messages: messages.map((message) => Message.make({ id: message.id, role: "user", content: message.text })),
+          providerOptions: { reasoningEffort: "xhigh" },
+          promptCacheKey: session.id,
+        })
+        const selections: Array<Model.Ref | undefined> = []
+        let prefixBuilt = false
+        const input = {
+          session,
+          messages,
+          prepare: modelRequests.prepare,
+          resolveModel: (session: Session.Info) =>
+            Effect.sync(() => {
+              selections.push(session.model)
+              const ref = session.model!
+              return SessionRunnerModel.resolved(
+                LanguageModel.make({
+                  id: ref.id,
+                  provider: ref.providerID,
+                  route: OpenAIResponses.route.with({ providerOptions: { reasoningEffort: ref.variant } }),
+                }),
+                { ...resolved, variant: ref.variant },
+              )
+            }),
+          prepareRequest: () =>
+            Effect.sync(() => {
+              prefixBuilt = true
+              return prefix
+            }),
+        }
+        expect(
+          yield* mode === "auto"
+            ? compaction.compact({ ...input, resolved: current })
+            : compaction.compactManual({ ...input, inputID: SessionMessage.ID.create() }),
+        ).toEqual({ status: "completed" })
+        const different = selection === "different-model" || selection === "different-variant"
+        expect(prefixBuilt).toBe(!different)
+        expect(selections).toEqual([...(mode === "manual" ? [current.ref] : []), ...(different ? [chosen] : [])])
+        expect((yield* store.get(session.id))?.model).toEqual(current.ref)
+        expect(requests).toHaveLength(1)
+        expect(String(requests[0].model.id)).toBe(selection === "different-model" ? "gpt-5.6-sol" : "gpt-5.6-luna")
+        expect(requests[0].cache).toBeUndefined()
+        const wire = yield* compileRequest(requests[0])
+        expect(wire.body).not.toHaveProperty("prompt_cache_options")
+        expect(wire.body.reasoning).toMatchObject({ effort: selection === "different-variant" ? "low" : "xhigh" })
+        expect(JSON.stringify(wire.body.input)).toContain("Earlier work")
+      }),
+    )
+  }
+}
+
+it.effect("configured model resolution failure records a failed compaction", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    const modelRequests = yield* SessionModelRequest.Service
+    const session = yield* insertSession(Session.ID.make("ses_compaction_bad_model"))
+    const selected = Model.Ref.parse("openai/missing")
+    yield* compaction.transform((draft) => draft.configure({ model: selected }))
+    const result = yield* compaction.compact({
+      session,
+      resolved,
+      resolveModel: () =>
+        Effect.fail(
+          new SessionRunnerModel.ModelUnavailableError({ providerID: selected.providerID, modelID: selected.id }),
+        ),
+      prepare: modelRequests.prepare,
+      messages: [
+        {
+          id: SessionMessage.ID.create(),
+          type: "user",
+          text: "Keep this work",
+          time: { created: DateTime.makeUnsafe(0) },
+        },
+      ],
+    })
+    expect(result).toMatchObject({ status: "failed", error: { message: "Model unavailable: openai/missing" } })
+    expect(requests).toEqual([])
   }),
 )
 

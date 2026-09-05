@@ -74,7 +74,7 @@ import { SkillInstructions } from "@opencode-ai/core/skill/instructions"
 import { ReferenceInstructions } from "@opencode-ai/core/reference/instructions"
 import { McpInstructions } from "@opencode-ai/core/mcp/instructions"
 import { SessionSystemPrompt } from "@opencode-ai/core/session/system-prompt"
-import { ID } from "@opencode-ai/core/model"
+import { ID, VariantID } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { Provider } from "@opencode-ai/core/provider"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Queue, Schema, Scope, Stream } from "effect"
@@ -2602,6 +2602,28 @@ describe("SessionRunnerLLM", () => {
           error: expect.objectContaining({ message: "Unsupported parameter: max_output_tokens" }),
         }),
       )
+    }),
+  )
+
+  it.effect("uses the configured summarizer on overflow and resumes the original model", () =>
+    Effect.gen(function* () {
+      const session = yield* setupOverflowRecovery
+      const compaction = yield* SessionCompaction.Service
+      yield* compaction.transform((draft) =>
+        draft.configure({
+          model: { providerID: Provider.ID.make("fake"), id: ID.make("replacement"), variant: VariantID.make("xhigh") },
+        }),
+      )
+      yield* TestLLM.push(
+        [LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" })],
+        TestLLM.text("## Objective\n- Summarized by the dedicated model", "dedicated-summary"),
+        TestLLM.text("Resumed on the conversation model", "resumed"),
+      )
+      yield* runPrompt(session, "Continue")
+      expect(requests.map((request) => String(request.model.id))).toEqual(["recovery", "replacement", "recovery"])
+      expect(requests.map((request) => request.cache)).toEqual([undefined, "none", undefined])
+      expect(userTexts(requests[1]).join("\n")).toContain("Earlier question")
+      expect(userTexts(requests[2]).join("\n")).toContain("Summarized by the dedicated model")
     }),
   )
 
@@ -6154,5 +6176,4 @@ describe("SessionRunnerLLM", () => {
       expect(yield* SessionInbox.find((yield* Database.Service).db, steer.id)).toMatchObject({ delivery: "queue" })
     }),
   )
-
 })

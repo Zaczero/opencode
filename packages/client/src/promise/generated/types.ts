@@ -1943,7 +1943,12 @@ export type ConfigEntry =
                 }
           }
         }
-        compaction?: { auto?: boolean; keep?: { tokens?: number }; buffer?: number }
+        compaction?: {
+          auto?: boolean
+          model?: string | { providerID: string; model: string; variant?: string }
+          keep?: { tokens?: number }
+          buffer?: number
+        }
         skills?: Array<string>
         commands?: {
           [x: string]: {

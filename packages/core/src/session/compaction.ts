@@ -20,6 +20,7 @@ import { Token } from "../util/token.js"
 import { SessionUsage } from "./usage.js"
 import { Agent } from "../agent.js"
 import { State } from "../state.js"
+import type { Model } from "../model.js"
 
 const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 15_000
@@ -59,6 +60,7 @@ Rules:
 
 export type Settings = {
   auto: boolean
+  model?: Model.Ref
   buffer: number
   tokens: number
 }
@@ -86,6 +88,7 @@ export type AutoInput = {
   readonly session: SessionSchema.Info
   readonly messages: readonly SessionMessage.Info[]
   readonly resolved: SessionRunnerModel.Resolved
+  readonly resolveModel: SessionContext.Interface["resolveModel"]
   readonly prepare: SessionModelRequest.Interface["prepare"]
   readonly prepareRequest?: PrepareRequest
 }
@@ -336,6 +339,7 @@ const make = (dependencies: Dependencies) => {
     draft: (draft) => ({
       configure: (settings) => {
         if (settings.auto !== undefined) draft.auto = settings.auto
+        if (settings.model !== undefined) draft.model = settings.model
         if (settings.buffer !== undefined) draft.buffer = settings.buffer
         if (settings.tokens !== undefined) draft.tokens = settings.tokens
       },
@@ -464,22 +468,43 @@ const make = (dependencies: Dependencies) => {
     })
     return { status: "completed" as const }
   })
-  const compact = Effect.fn("SessionCompaction.compact")(function* (input: AutoInput) {
-    const content = planContent(input.messages, state.get().tokens)
-    if (content)
-      return yield* execute({
-        session: input.session,
-        resolved: input.resolved,
-        prepare: input.prepare,
-        reason: "auto",
-        messages: input.messages,
-        request: input.prepareRequest ? yield* input.prepareRequest(input.resolved) : undefined,
-        ...content,
+  const compact = Effect.fn("SessionCompaction.compact")(function* (input: AutoInput | ManualInput) {
+    const manual = "inputID" in input ? input : undefined
+    const reason = manual ? "manual" : "auto"
+    const config = state.get()
+    const content = planContent(input.messages, config.tokens)
+    if (!content)
+      return yield* failed({
+        sessionID: input.session.id,
+        reason,
+        error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
+        inputID: manual?.inputID,
       })
-    return yield* failed({
-      sessionID: input.session.id,
-      reason: "auto",
-      error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
+    const selected = yield* Effect.gen(function* () {
+      const current = "resolved" in input ? input.resolved : yield* input.resolveModel(input.session)
+      const sameModel =
+        config.model === undefined ||
+        (config.model.providerID === current.ref.providerID &&
+          config.model.id === current.ref.id &&
+          config.model.variant === current.ref.variant)
+      const resolved = sameModel ? current : yield* input.resolveModel({ ...input.session, model: config.model })
+      return { resolved, sameModel }
+    }).pipe(
+      Effect.catch((cause) =>
+        failed({ sessionID: input.session.id, reason, error: toSessionError(cause), inputID: manual?.inputID }),
+      ),
+    )
+    if ("status" in selected) return selected
+    return yield* execute({
+      session: input.session,
+      ...selected,
+      prepare: input.prepare,
+      reason,
+      messages: input.messages,
+      request: selected.sameModel && input.prepareRequest ? yield* input.prepareRequest(selected.resolved) : undefined,
+      inputID: manual?.inputID,
+      started: manual?.started,
+      ...content,
     })
   })
   const required = (input: RequiredInput) => {
@@ -503,46 +528,13 @@ const make = (dependencies: Dependencies) => {
     if (used <= 0) return false
     return used >= promptCeiling
   }
-  const compactManual = Effect.fn("SessionCompaction.compactManual")(function* (input: ManualInput) {
-    const content = planContent(input.messages, state.get().tokens)
-    if (!content)
-      return yield* failed({
-        sessionID: input.session.id,
-        reason: "manual",
-        error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
-        inputID: input.inputID,
-      })
-    const resolved = yield* input.resolveModel(input.session).pipe(
-      Effect.catch((cause) =>
-        failed({
-          sessionID: input.session.id,
-          reason: "manual",
-          error: toSessionError(cause),
-          inputID: input.inputID,
-        }),
-      ),
-    )
-    if ("status" in resolved) return resolved
-    const request = input.prepareRequest ? yield* input.prepareRequest(resolved) : undefined
-    return yield* execute({
-      session: input.session,
-      resolved,
-      prepare: input.prepare,
-      reason: "manual",
-      messages: input.messages,
-      request,
-      inputID: input.inputID,
-      started: input.started,
-      ...content,
-    })
-  })
   return Service.of({
     transform: state.transform,
     reload: state.reload,
     enabled: () => state.get().auto,
     required,
     compact,
-    compactManual,
+    compactManual: compact,
   })
 }
 

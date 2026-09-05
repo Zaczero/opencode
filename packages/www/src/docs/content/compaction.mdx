@@ -13,23 +13,24 @@ latest completed checkpoint and the messages that follow it.
 
 ## Automatic compaction
 
-Automatic compaction is enabled by default. Before a model call, V2 estimates
-the size of the final system prompt, messages, and advertised tools. It starts
-compaction when:
+Automatic compaction is enabled by default. Before a model call, V2 compares
+the latest assistant's reported token usage with the conversation model's
+prompt ceiling. With no explicit input limit, that ceiling is:
 
 ```text
-estimated tokens > context limit - max(requested output tokens, buffer)
+context limit - max(min(output limit, 32000), buffer)
 ```
 
-The estimate is approximate: V2 JSON-serializes the request and assumes four
-characters per token. When compaction succeeds, V2 rebuilds the request from
-the new checkpoint and retries the step without promoting the input again.
+An explicit input limit also bounds the ceiling at `input limit - buffer`.
+Compaction starts when reported usage reaches the ceiling. When it succeeds,
+V2 rebuilds the request from the new checkpoint and retries the step without
+promoting the input again.
 
 V2 also recognizes provider errors classified as context overflow. If an
 overflow occurs before the provider produces assistant output or other retry
-evidence, V2 can compact and retry that step once. This recovery is attempted
-even when `auto` is `false`; `auto` controls only the preflight size check. A
-second overflow after recovery is returned as an error.
+evidence, V2 can compact and retry that step once. Setting `auto` to `false`
+disables both the preflight check and overflow recovery. A second overflow
+after recovery is returned as an error.
 
 ## Manual compaction
 
@@ -75,10 +76,36 @@ Add `compaction` to any [OpenCode configuration file](/config):
 preserves more recent detail but leaves less room for future work. Larger
 `buffer` triggers preflight compaction earlier.
 
+Set `compaction.model` to use a dedicated summarizer for automatic, overflow,
+and manual compaction:
+
+```jsonc
+{
+  "compaction": {
+    "model": "openai/gpt-5.6-luna#xhigh",
+  },
+}
+```
+
+It accepts the same `provider/model#variant` string or explicit model selection
+object as the main `model` setting. When omitted, compaction uses the current
+conversation model and variant. An unavailable selection fails compaction;
+there is no fallback model. The conversation's model and compaction threshold
+do not change.
+
 ## Checkpoint contents
 
-V2 uses the session's selected or default model to generate the summary, with
-tools disabled and at most 4096 output tokens. The summary records the
+With the same model and variant, compaction reuses the normal request's system
+instructions, tool definitions, generation settings, and structured history
+prefix, then appends the summary instruction. Tool definitions remain present
+for cache reuse, but tool calls are disabled. Provider cache retention and
+available breakpoints still determine whether a matching prefix can be read.
+
+A different summarizer receives serialized history instead, without the
+conversation's tool definitions or model-specific reasoning metadata.
+Compaction uses the selected model's normal caching behavior.
+Output allowances come from the selected
+model and its settings. The summary records the
 objective, important details, completed and active work, blockers, next moves,
 and relevant files.
 
@@ -110,15 +137,15 @@ read. See [Instructions](/instructions) for source ordering and update behavior.
 
 ## Current limitations
 
-- Compaction requires a resolvable model with a positive catalog context limit.
-  There is no separate compaction-model setting or fallback model.
+- Compaction requires a resolvable summarizer with enough context for its input
+  and output allowance. It does not split the input across multiple requests.
 - Summary generation can fail if the summary prompt itself cannot fit beside
   its output allowance, the model returns no summary, or the provider fails.
 - Automatic and overflow compaction need older conversation context that can be
   replaced. A provider overflow can still surface when there is no compressible
   head or fixed instructions and tool schemas dominate the request.
-- Overflow recovery retries only once per step. Token estimation is heuristic,
-  so it cannot prevent every provider-specific overflow.
+- Overflow recovery retries only once per step. Reported usage does not include
+  newly admitted input, so the preflight check cannot prevent every overflow.
 - Earlier durable messages remain stored even though they are no longer in the
   active model context.
 

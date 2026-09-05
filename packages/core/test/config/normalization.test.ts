@@ -79,6 +79,18 @@ describe("ConfigNormalize", () => {
     expect(Duration.toMillis(info.warming.duration ?? Duration.zero)).toBe(1_800_000)
   })
 
+  test.each(["openai/gpt-5.6-luna#xhigh", { providerID: "openai", model: "gpt-5.6-luna", variant: "xhigh" }])(
+    "preserves a dedicated compaction model through normalization: %j",
+    (model) => {
+      const result = normalized({ compaction: { model, keep: { tokens: 20000 } } })
+      expect(result.diagnostics).toEqual([])
+      expect(result.encoded.compaction).toEqual({
+        model: { providerID: "openai", model: "gpt-5.6-luna", variant: "xhigh" },
+        keep: { tokens: 20000 },
+      })
+    },
+  )
+
   test("preserves arbitrary JSON-round-tripped native configuration", () => {
     FastCheck.assert(
       FastCheck.property(Schema.toArbitrary(Info)(FastCheck), (info) => {

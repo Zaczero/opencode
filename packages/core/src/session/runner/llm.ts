@@ -112,6 +112,7 @@ const layer = Layer.effect(
                 const compacted = yield* restore(
                   Effect.gen(function* () {
                     return yield* compaction.compactManual({
+                      resolveModel: context.resolveModel,
                       session,
                       resolveContext: (session) =>
                         Effect.gen(function* () {
@@ -265,10 +266,12 @@ const layer = Layer.effect(
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
         const loaded =
-          initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap((selection) => context.load(selection, history))))
+          initial ??
+          (yield* prepareContext(sessionID).pipe(Effect.flatMap((selection) => context.load(selection, history))))
         initial = undefined
         const compactionInput = {
           context: loaded,
+          resolveModel: context.resolveModel,
           prepare: context.prepare,
         }
         if (compaction.required({ messages: loaded.messages, resolved: loaded.model, context: loaded })) {

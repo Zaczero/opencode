@@ -4,6 +4,7 @@ import { OpenAIChat } from "@opencode-ai/ai/protocols"
 import { Bus } from "@opencode-ai/core/bus"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigCompactionPlugin } from "@opencode-ai/core/config/plugin/compaction"
+import { ConfigNormalize } from "@opencode-ai/core/config/normalize"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { llmClient } from "@opencode-ai/core/effect/app-node-platform"
 import { SessionCompaction } from "@opencode-ai/core/session/compaction"
@@ -17,6 +18,7 @@ import { Location } from "@opencode-ai/core/location"
 import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ConfigCompaction } from "@opencode-ai/schema/config/compaction"
+import { Model } from "@opencode-ai/schema/model"
 import { Document, Event, Info } from "@opencode-ai/schema/config"
 import { Money } from "@opencode-ai/schema/money"
 import { LayerNode } from "@opencode-ai/util/effect/layer-node"
@@ -56,6 +58,16 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       const modelRequests = yield* SessionModelRequest.Service
       const config = yield* Config.Test
       const bus = yield* Bus.Service
+      const selections: Array<Model.Ref | undefined> = []
+      const resolveModel = (session: Session.Info) =>
+        Effect.sync(() => {
+          selections.push(session.model)
+          return resolved
+        })
+      const normalized = ConfigNormalize.normalize({
+        compaction: { buffer: 10_000, keep: { tokens: 0 }, model: "openai/gpt-5.6-luna#xhigh" },
+      })
+      if (normalized.type === "rejected") return yield* Effect.die("Compaction configuration was rejected")
       yield* config.setEntries([
         new Document({
           type: "document",
@@ -63,12 +75,7 @@ describe("ConfigCompactionPlugin.Plugin", () => {
         }),
         new Document({
           type: "document",
-          info: new Info({
-            compaction: new ConfigCompaction.Info({
-              buffer: 10_000,
-              keep: new ConfigCompaction.Keep({ tokens: 0 }),
-            }),
-          }),
+          info: Schema.decodeUnknownSync(Info)(normalized.encoded),
         }),
       ])
       yield* ConfigCompactionPlugin.Plugin.effect(host({ event: { subscribe: () => bus.subscribe(Event.Updated) } }))
@@ -95,12 +102,14 @@ describe("ConfigCompactionPlugin.Plugin", () => {
         yield* compaction.compactManual({
           session,
           resolveContext: () => Effect.succeed({ ...nearInput.context, messages, instructionUpdate: "" }),
+          resolveModel,
           prepare: modelRequests.prepare,
           messages,
           inputID: SessionMessage.ID.make("msg_compaction_manual"),
         }),
       ).toEqual({ status: "completed" })
       expect(Option.getOrThrow(yield* Fiber.join(started)).data.recent).toContain("Recent context")
+      expect(selections).toEqual([Model.Ref.parse("openai/gpt-5.6-luna#xhigh")])
 
       yield* config.setEntries([
         new Document({
@@ -121,6 +130,25 @@ describe("ConfigCompactionPlugin.Plugin", () => {
         yield* Effect.die(new Error("Timed out waiting for compaction config reload"))
       })
       expect(compaction.required(bufferedInput)).toBe(false)
+      selections.length = 0
+      expect(
+        yield* compaction.compactManual({
+          session,
+          resolveModel,
+          resolveContext: () => Effect.succeed({ ...nearInput.context, messages, instructionUpdate: "" }),
+          prepare: modelRequests.prepare,
+          messages: [
+            {
+              id: SessionMessage.ID.create(),
+              type: "user",
+              text: "New work",
+              time: { created: DateTime.makeUnsafe(2) },
+            },
+          ],
+          inputID: SessionMessage.ID.create(),
+        }),
+      ).toEqual({ status: "completed" })
+      expect(selections).toEqual([])
 
       yield* config.setEntries([
         new Document({

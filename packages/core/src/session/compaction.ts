@@ -12,6 +12,7 @@ import {
   type ContentPart,
 } from "@opencode-ai/ai"
 import { Agent } from "@opencode-ai/schema/agent"
+import type { Model } from "@opencode-ai/schema/model"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Bus } from "../bus.js"
@@ -83,6 +84,7 @@ const SUMMARY_HEADINGS = SUMMARY_TEMPLATE.split("\n").filter((line) => line.star
 
 export type Settings = {
   auto: boolean
+  model?: Model.Ref
   buffer: number
   tokens: number
 }
@@ -92,6 +94,7 @@ export type Editor = {
 }
 
 export type AutoInput = {
+  readonly resolveModel: SessionContext.Interface["resolveModel"]
   readonly context: SessionContext.Loaded
   readonly prepare: SessionModelRequest.Interface["prepare"]
 }
@@ -103,6 +106,7 @@ type RequiredInput = {
 }
 
 export type ManualInput = {
+  readonly resolveModel: SessionContext.Interface["resolveModel"]
   readonly session: SessionSchema.Info
   readonly messages: readonly SessionMessage.Info[]
   readonly inputID: SessionMessage.ID
@@ -344,6 +348,7 @@ export const layer = Layer.effect(
       initial: () => ({ auto: true, buffer: DEFAULT_BUFFER, tokens: DEFAULT_KEEP_TOKENS }),
       editor: (editor) => ({
         configure: (settings) => {
+          if (settings.model !== undefined) editor.model = settings.model
           if (settings.auto !== undefined) editor.auto = settings.auto
           if (settings.buffer !== undefined) editor.buffer = settings.buffer
           if (settings.tokens !== undefined) editor.tokens = settings.tokens
@@ -369,6 +374,25 @@ export const layer = Layer.effect(
           error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
           inputID: input.inputID,
         })
+      const configured = state.get().model
+      const sameModel =
+        configured === undefined ||
+        (configured.providerID === context.model.ref.providerID &&
+          configured.id === context.model.ref.id &&
+          configured.variant === context.model.ref.variant)
+      const selected = yield* (
+        sameModel ? Effect.succeed(context.model) : input.resolveModel({ ...context.session, model: configured })
+      ).pipe(
+        Effect.catch((cause) =>
+          failed({
+            sessionID: context.session.id,
+            reason: input.reason,
+            inputID: input.inputID,
+            error: toSessionError(cause),
+          }),
+        ),
+      )
+      if ("status" in selected) return selected
       if (!input.started)
         yield* bus.publish(SessionEvent.Compaction.Started, {
           sessionID: context.session.id,
@@ -390,31 +414,53 @@ export const layer = Layer.effect(
             })
           : Effect.void,
       )
-      const transcript = SessionModelRequest.baseTranscript({
-        agent: context.agent.info,
-        model: context.model,
-        tools: context.tools,
-        initial: context.initial,
-        messages: history.messages,
-      })
-      const prompt = buildPrompt(history.messages.some((message) => message.type === "compaction" && message.status === "completed"))
+      const previous = history.messages.findLast(
+        (message): message is SessionMessage.CompactionCompleted =>
+          message.type === "compaction" && message.status === "completed",
+      )
+      const serialized = sameModel
+        ? []
+        : history.messages.flatMap((message) => {
+            if (message.type === "compaction")
+              return message.status === "completed" && message.recent ? [message.recent] : []
+            if (message.type === "system") return ["[System update]: " + message.text]
+            const text = serializeRecentMessage(message)
+            return text ? [text] : []
+          })
+      const prompt = sameModel
+        ? buildPrompt(previous !== undefined)
+        : [
+            ...(previous ? ["<previous-summary>\n" + previous.summary + "\n</previous-summary>"] : []),
+            ...serialized,
+            buildPrompt(previous !== undefined),
+          ].join("\n\n")
       const hooked = yield* hooks.trigger("session", "compaction", {
         sessionID: context.session.id,
         reason: input.reason,
-        context: [],
+        previousSummary: sameModel ? undefined : previous?.summary,
+        context: serialized,
         prompt,
       })
       const validSummary = hooked.prompt === prompt ? hasSummarySection : (summary: string) => summary.trim().length > 0
+      const transcript = sameModel
+        ? SessionModelRequest.baseTranscript({
+            agent: context.agent.info,
+            model: selected,
+            tools: context.tools,
+            initial: context.initial,
+            messages: history.messages,
+          })
+        : { system: [], messages: [] }
       const prepared = yield* input.prepare({
         kind: "compaction",
         toolChoice: { type: "none" },
         scope: {
           session: context.session,
           agentID: Agent.ID.make("compaction"),
-          contextAgentID: context.agent.id,
-          model: context.model,
-          tools: context.tools,
+          model: selected,
+          ...(sameModel ? { contextAgentID: context.agent.id, tools: context.tools } : {}),
         },
+        ...(sameModel ? {} : { contextHooks: false as const }),
         transcript: {
           system: transcript.system,
           messages: [
@@ -426,9 +472,10 @@ export const layer = Layer.effect(
       })
       const retry = yield* SessionRunnerRetry.policy(context.session.id)
       // Both requests share the retry allowance; rejected output never enters the reminder request.
+      const summaryRequest = sameModel ? prepared.request : LLMRequest.update(prepared.request, { cache: "none" })
       for (const request of [
-        prepared.request,
-        LLMRequest.update(prepared.request, {
+        summaryRequest,
+        LLMRequest.update(summaryRequest, {
           messages: [
             ...prepared.request.messages,
             Message.user(
@@ -458,8 +505,8 @@ export const layer = Layer.effect(
             }
             if (LLMEvent.is.stepFinish(event)) {
               providerState =
-                event.providerMetadata?.[context.model.model.route.providerMetadataKey ?? context.model.model.provider]
-              const step = SessionUsage.record(event.usage, context.model.cost)
+                event.providerMetadata?.[selected.model.route.providerMetadataKey ?? selected.model.provider]
+              const step = SessionUsage.record(event.usage, selected.cost)
               usage = usage ? SessionUsage.add(usage, step) : step
             }
             if (LLMEvent.is.finish(event)) {
@@ -494,7 +541,7 @@ export const layer = Layer.effect(
                   cause,
                   error: toSessionError(cause),
                   agent: Agent.ID.make("compaction"),
-                  model: context.model.ref,
+                  model: selected.ref,
                   hook: prepared.retry,
                   retry: SessionRunnerRetry.isRetryable(cause),
                 })
@@ -544,7 +591,7 @@ export const layer = Layer.effect(
       yield* bus.publish(SessionEvent.Compaction.Ended, {
         sessionID: context.session.id,
         reason: input.reason,
-        model: context.model.ref,
+        model: selected.ref,
         providerState,
         text: summary,
         recent: history.recent,
@@ -590,6 +637,7 @@ export const layer = Layer.effect(
               context,
               instructionUpdate: context.instructionUpdate,
               prepare: input.prepare,
+              resolveModel: input.resolveModel,
               reason: "manual",
               inputID: input.inputID,
               started: input.started,

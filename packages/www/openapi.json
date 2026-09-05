@@ -14180,6 +14180,33 @@
               "auto": {
                 "type": "boolean"
               },
+              "model": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^/#]+\\/[^#]+(?:#[^#]+)?$"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "providerID": {
+                        "type": "string",
+                        "pattern": "^[^/#]+$"
+                      },
+                      "model": {
+                        "type": "string",
+                        "pattern": "^[^#]+$"
+                      },
+                      "variant": {
+                        "type": "string",
+                        "pattern": "^[^#]+$"
+                      }
+                    },
+                    "required": ["providerID", "model"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
               "keep": {
                 "type": "object",
                 "properties": {

@@ -252,10 +252,16 @@ export function createData(config: CreateDataInput) {
   )
   const messageIndex = new Map<string, Map<string, number>>()
   const messageVersion = new Map<string, number>()
-  let activeRequest = 0
+  let activeRequest: { controller: AbortController; started: boolean; again: boolean } | undefined
   let activeUpdates: Map<string, DataSessionStatus | undefined> | undefined
   let executingUpdates: Map<string, boolean> | undefined
   const sync = createSync()
+  onCleanup(() => {
+    activeRequest?.controller.abort()
+    activeRequest = undefined
+    activeUpdates = undefined
+    executingUpdates = undefined
+  })
 
   function setSessionActive(sessionID: string, status: DataSessionStatus) {
     activeUpdates?.set(sessionID, status)
@@ -267,43 +273,66 @@ export function createData(config: CreateDataInput) {
     setStore("session", "executing", sessionID, executing)
   }
 
-  function syncSessionActive() {
-    const request = ++activeRequest
-    const updates = new Map<string, DataSessionStatus | undefined>()
-    const executions = new Map<string, boolean>()
-    activeUpdates = updates
-    executingUpdates = executions
-    void api()
-      .session.active()
-      .then((active) => {
-        if (request !== activeRequest) return
-        const statuses = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
-        const executing = new Map(Object.entries(active).map(([id, entry]) => [id, entry.type === "execution"]))
-        updates.forEach((status, id) => (status === undefined ? statuses.delete(id) : statuses.set(id, status)))
-        executions.forEach((value, id) => executing.set(id, value))
-        activeUpdates = undefined
-        executingUpdates = undefined
-        setStore("session", "active", reconcile(Object.fromEntries(statuses)))
-        setStore("session", "executing", reconcile(Object.fromEntries(executing)))
-        const missing = [...statuses.keys()].filter((sessionID) => store.session.info[sessionID] === undefined)
-        if (missing.length === 0) return
-        void Promise.all(
-          missing.map((sessionID) =>
-            api()
-              .session.get({ sessionID })
-              .catch(() => undefined),
-          ),
-        ).then((sessions) => {
-          for (const session of sessions) {
-            if (!session) continue
-            if (store.session.active[session.id] !== "running") continue
-            setStore("session", "info", session.id, reconcile(session))
-            sync.complete(`session:${session.id}`)
-            registerSession(session.id)
-          }
+  function syncSessionActive(reconnect = false) {
+    if (reconnect) {
+      activeRequest?.controller.abort()
+      activeRequest = undefined
+    }
+    if (disposed) return
+    if (activeRequest) {
+      if (activeRequest.started) activeRequest.again = true
+      return
+    }
+    const request = { controller: new AbortController(), started: false, again: false }
+    activeRequest = request
+    // The connection delivers event batches synchronously; start one read after the batch.
+    queueMicrotask(() => {
+      if (disposed || activeRequest !== request) return
+      request.started = true
+      const updates = new Map<string, DataSessionStatus | undefined>()
+      const executions = new Map<string, boolean>()
+      activeUpdates = updates
+      executingUpdates = executions
+      void api()
+        .session.active({ signal: request.controller.signal })
+        .then((active) => {
+          if (request !== activeRequest || request.again) return
+          const statuses = new Map<string, DataSessionStatus>(Object.keys(active).map((id) => [id, "running"]))
+          const executing = new Map(Object.entries(active).map(([id, entry]) => [id, entry.type === "execution"]))
+          updates.forEach((status, id) => (status === undefined ? statuses.delete(id) : statuses.set(id, status)))
+          executions.forEach((value, id) => executing.set(id, value))
+          activeUpdates = undefined
+          executingUpdates = undefined
+          setStore("session", "active", reconcile(Object.fromEntries(statuses)))
+          setStore("session", "executing", reconcile(Object.fromEntries(executing)))
+          const missing = [...statuses.keys()].filter((sessionID) => store.session.info[sessionID] === undefined)
+          if (missing.length === 0) return
+          void Promise.all(
+            missing.map((sessionID) =>
+              api()
+                .session.get({ sessionID })
+                .catch(() => undefined),
+            ),
+          ).then((sessions) => {
+            if (disposed || request.controller.signal.aborted) return
+            for (const session of sessions) {
+              if (!session) continue
+              if (store.session.active[session.id] !== "running") continue
+              setStore("session", "info", session.id, reconcile(session))
+              sync.complete(`session:${session.id}`)
+              registerSession(session.id)
+            }
+          })
         })
-      })
-      .catch(() => undefined)
+        .catch(() => undefined)
+        .finally(() => {
+          if (activeRequest !== request) return
+          activeRequest = undefined
+          activeUpdates = undefined
+          executingUpdates = undefined
+          if (request.again) syncSessionActive()
+        })
+    })
   }
 
   function removePending(sessionID: string, inboxID?: string) {
@@ -645,7 +674,7 @@ export function createData(config: CreateDataInput) {
   function handleEvent(event: OpenCodeEvent) {
     switch (event.type) {
       case "server.connected": {
-        syncSessionActive()
+        syncSessionActive(true)
         refresh(() =>
           api()
             .location.get({ location: locationQuery(defaultLocation()) })

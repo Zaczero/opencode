@@ -149,6 +149,8 @@ export interface Interface {
   /** Sessions with work that is still running on their behalf. */
   readonly activeSessions: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  /** Retire live work and undelivered notifications that reference a deleted Session. */
+  readonly removeSession: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   readonly pendingBackground: Effect.Effect<readonly Background[]>
   /** Observe terminal background subagents after their durable recovery record is written. */
   readonly onBackgroundSettled: (
@@ -562,6 +564,39 @@ export const make = Effect.gen(function* () {
     },
   )
 
+  const removeSession: Interface["removeSession"] = Effect.fn("Job.removeSession")(function* (sessionID) {
+    const completed_at = yield* Clock.currentTimeMillis
+    const scopes = yield* SynchronizedRef.modifyEffect(state.jobs, (registry) =>
+      Effect.gen(function* () {
+        const active = new Map(registry.active)
+        const terminal = new Map(registry.terminal)
+        const scopes: Scope.Closeable[] = []
+        for (const entries of [active, terminal]) {
+          for (const [id, job] of entries) {
+            if (
+              job.info.metadata?.["sessionID"] !== sessionID &&
+              !(job.recovery && referencesSession(job.recovery, sessionID))
+            )
+              continue
+            entries.delete(id)
+            if (job.info.status !== "running") continue
+            scopes.push(job.scope)
+            yield* Deferred.succeed(job.done, { ...snapshot(job), status: "cancelled", completed_at })
+          }
+        }
+        for (const [notificationID, delivery] of deliveries) {
+          if (!referencesSession(delivery.background.recovery, sessionID)) continue
+          yield* kv.remove(`${backgroundPrefix}${notificationID}`)
+          deliveries.delete(notificationID)
+          yield* Deferred.succeed(delivery.done, undefined)
+        }
+        return [scopes, { active, terminal }] as const
+      }),
+    )
+    // Remove ownership before interruption can settle the old job and recreate its marker.
+    yield* Effect.forEach(scopes, (scope) => Scope.close(scope, Exit.void), { concurrency: "unbounded", discard: true })
+  }, Effect.uninterruptible)
+
   const onBackgroundSettled: Interface["onBackgroundSettled"] = (listener) =>
     Effect.sync(() => {
       state.backgroundListeners.add(listener)
@@ -580,11 +615,18 @@ export const make = Effect.gen(function* () {
     awaitOwned,
     activeSessions,
     cancel,
+    removeSession,
     pendingBackground,
     onBackgroundSettled,
     completeBackground,
   })
 })
+
+function referencesSession(recovery: Recovery, sessionID: SessionSchema.ID) {
+  return recovery.kind === "shell"
+    ? recovery.sessionID === sessionID
+    : recovery.parentSessionID === sessionID || recovery.childSessionID === sessionID
+}
 
 const layer = Layer.effect(Service, make)
 

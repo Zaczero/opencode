@@ -5,7 +5,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import type { Tool } from "@opencode/schema/tool"
-import { Deferred, Effect, Schema, Scope } from "effect"
+import { Deferred, Effect, Schema } from "effect"
 import { Config } from "../../config.js"
 import { Environment } from "../../environment/index.js"
 import { Job } from "../../job.js"
@@ -103,7 +103,6 @@ export const Plugin = {
   effect: Effect.fn("ShellTool.Plugin")(function* (ctx: Context) {
     const sessions = yield* Session.Service
     const jobs = yield* Job.Service
-    const scope = yield* Scope.Scope
     const environment = yield* Environment.Service
     const access = yield* FileAccess.Service
     const shell = yield* Shell.Service
@@ -150,39 +149,42 @@ export const Plugin = {
       return timeout
     })
 
-    const notifyWhenDone = Effect.fn("ShellTool.notifyWhenDone")(
-      function* (
-        sessionID: SessionSchema.ID,
-        id: string,
-        shellID: string,
-        command: string,
-        settled: Deferred.Deferred<Output>,
-      ) {
-        const info = (yield* jobs.wait({ id })).info
-        if (!info || info.status === "running") return
-        const output = info.status === "completed" ? yield* Deferred.await(settled) : undefined
-        const text = output
-          ? resultMessages(output).join("\n\n")
-          : info.status === "error"
-            ? (info.error ?? "Command failed")
-            : "Command cancelled"
-        yield* sessions.synthetic({
-          ...(info.notificationID ? { id: info.notificationID } : {}),
-          sessionID,
-          description: command,
-          ...ShellResult.notification({
-            jobID: id,
-            shellID,
-            command,
-            state: info.status,
-            text,
-            output,
-          }),
-        })
-        if (info.notificationID) yield* jobs.completeBackground(info.notificationID)
-      },
-      Effect.forkIn(scope, { startImmediately: true }),
-    )
+    const notifyWhenDone = Effect.fn("ShellTool.notifyWhenDone")(function* (
+      sessionID: SessionSchema.ID,
+      id: string,
+      shellID: string,
+      command: string,
+      settled: Deferred.Deferred<Output>,
+    ) {
+      yield* jobs.observe(
+        id,
+        Effect.fnUntraced(function* (info) {
+          if (info.status === "running") return
+          const output = info.status === "completed" ? yield* Deferred.await(settled) : undefined
+          const text = output
+            ? resultMessages(output).join("\n\n")
+            : info.status === "error"
+              ? (info.error ?? "Command failed")
+              : "Command cancelled"
+          yield* sessions
+            .synthetic({
+              ...(info.notificationID ? { id: info.notificationID } : {}),
+              sessionID,
+              description: command,
+              ...ShellResult.notification({
+                jobID: id,
+                shellID,
+                command,
+                state: info.status,
+                text,
+                output,
+              }),
+            })
+            .pipe(Effect.catchTag("Session.NotFoundError", () => Effect.void))
+          if (info.notificationID) yield* jobs.completeBackground(info.notificationID)
+        }),
+      )
+    })
 
     yield* ctx.tool
       .transform((editor) =>

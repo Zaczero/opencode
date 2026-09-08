@@ -6,12 +6,14 @@ import { ChildProcess } from "effect/unstable/process"
 import { produce } from "immer"
 import { Shell } from "@opencode/schema/shell"
 import { AppProcess } from "@opencode/util/process"
-import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
+import { makeGlobalNode, makeLocationNode, Node } from "@opencode/util/effect/app-node"
+import { LayerNode } from "@opencode/util/effect/layer-node"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Bus } from "./bus.js"
 import { Environment } from "./environment/index.js"
 import { FileRetention } from "./file-retention.js"
 import { Location } from "./location.js"
+import { LocationServiceMap } from "./location-service-map.js"
 import { Global } from "@opencode/util/global"
 import { ShellSelect } from "./shell/select.js"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
@@ -120,6 +122,7 @@ const layer = () =>
     Effect.gen(function* () {
       const bus = yield* Bus.Service
       const location = yield* Location.Service
+      const locations = yield* LocationServiceMap.Service
       const global = yield* Global.Service
       const shell = yield* ShellSelect.Service
       const environment = yield* Environment.Service
@@ -224,6 +227,7 @@ const layer = () =>
       })
 
       const result = Effect.fn("Shell.result")(function* (started: Shell.Info) {
+        yield* locations.contextEffectOption(location).pipe(Effect.orDie)
         const info = yield* wait(started.id).pipe(
           Effect.catchTag("Shell.NotFoundError", () =>
             Effect.succeed({ ...started, status: "killed" as const, time: { ...started.time, completed: Date.now() } }),
@@ -243,7 +247,7 @@ const layer = () =>
           return { output: `${text || "(no output)"}${notice}`, truncated }
         }).pipe(Effect.catchTag("Shell.NotFoundError", () => Effect.succeed(undefined)))
         return { info, capture }
-      })
+      }, Effect.scoped)
 
       const create = Effect.fn("Shell.create")(function* <E = never, R = never>(
         input: CreateInput,
@@ -290,6 +294,8 @@ const layer = () =>
         runFork(
           Effect.scoped(
             Effect.gen(function* () {
+              // A detached command still owns the Location whose services manage its process and output.
+              yield* locations.contextEffectOption(location).pipe(Effect.orDie)
               const handle = yield* environment.spawner
                 .spawn(
                   ChildProcess.make(invocation.shell, args, {
@@ -420,12 +426,13 @@ const layer = () =>
     }),
   )
 
-export const node = makeLocationNode({
+export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.location> = makeLocationNode({
   service: Service,
   layer: layer(),
   deps: [
     Bus.node,
     Location.node,
+    LocationServiceMap.node,
     Global.node,
     ShellSelect.node,
     Environment.node,

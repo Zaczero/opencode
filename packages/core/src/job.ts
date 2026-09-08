@@ -132,6 +132,8 @@ export interface Interface {
   readonly get: (id: string) => Effect.Effect<Info | undefined>
   readonly start: (input: StartInput) => Effect.Effect<Info>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
+  /** Keep a completion observer alive independently of the dispatching Location. */
+  readonly observe: (id: string, notify: (info: Info) => Effect.Effect<void, unknown>) => Effect.Effect<void>
   readonly block: (input: BlockInput) => Effect.Effect<BlockResult | undefined>
   readonly background: (id: string) => Effect.Effect<Info | undefined>
   readonly backgroundAll: (input: BackgroundAllInput) => Effect.Effect<Info[]>
@@ -274,7 +276,8 @@ export const make = Effect.gen(function* () {
             ...(Exit.isFailure(exit) ? { error: errorText(exit.cause) } : {}),
           },
         }
-        const background = status === "cancelled" ? undefined : yield* persistBackground(next)
+        const background =
+          status === "cancelled" && job.recovery?.kind === "subagent" ? undefined : yield* persistBackground(next)
         return [
           {
             info: snapshot(next),
@@ -363,6 +366,14 @@ export const make = Effect.gen(function* () {
       Effect.tap((result) =>
         result.info.status === "running" || job.recovery ? Effect.void : consume(input.id, job.scope),
       ),
+    )
+  })
+
+  const observe: Interface["observe"] = Effect.fn("Job.observe")(function* (id, notify) {
+    yield* wait({ id }).pipe(
+      Effect.flatMap((result) => (result.info ? notify(result.info) : Effect.void)),
+      Effect.catchCause((cause) => Effect.logError("Failed to deliver job completion", { id, cause })),
+      Effect.forkIn(state.scope, { startImmediately: true }),
     )
   })
 
@@ -579,6 +590,7 @@ export const make = Effect.gen(function* () {
     get,
     start,
     wait,
+    observe,
     block,
     background,
     backgroundAll,

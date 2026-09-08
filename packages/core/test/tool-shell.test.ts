@@ -3,7 +3,8 @@ import { realpathSync, watch } from "node:fs"
 import os from "os"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, Scope, Stream } from "effect"
+import { Cause, Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Queue, RcMap, Scope, Stream } from "effect"
+import { TestClock } from "effect/testing"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -16,6 +17,7 @@ import { Environment } from "@opencode/core/environment/index"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { Location } from "@opencode/core/location"
+import { LocationActivity } from "@opencode/core/location-activity"
 import { FileAccess } from "@opencode/core/file-access"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Model } from "@opencode/core/model"
@@ -162,6 +164,12 @@ const replacements = [
 const productionIt = testEffect(AppNodeBuilder.build(nodes, replacements))
 const it = testEffect(
   AppNodeBuilder.build(nodes, [...replacements, PluginSupervisor.node.replace(shellPluginSupervisor)]),
+)
+const activityIt = testEffect(
+  AppNodeBuilder.build(LayerNode.group([nodes, LocationActivity.node]), [
+    ...replacements,
+    PluginSupervisor.node.replace(shellPluginSupervisor),
+  ]),
 )
 const permissionIt = testEffect(
   AppNodeBuilder.build(LayerNode.group([nodes, PermissionSaved.node]), [
@@ -1436,6 +1444,51 @@ describe("ShellTool", () => {
     { timeout: 15_000 },
   )
 
+  activityIt.effect("keeps a background shell alive through location expiry and delivers its result", () =>
+    Effect.gen(function* () {
+      reset()
+      const tmp = yield* tmpdirScoped()
+      const location = Location.Ref.make({ directory: AbsolutePath.make(tmp.path) })
+      const sessions = yield* Session.Service
+      const locations = yield* LocationServiceMap.Service
+      const jobs = yield* Job.Service
+      const bus = yield* Bus.Service
+      yield* sessions.create({ id: sessionID, location, model: sessionModel })
+      yield* Effect.addFinalizer(() => locations.invalidate(location))
+      const admitted = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+        Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+        Stream.runHead,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      const shellID = yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        const registry = yield* Tool.Service
+        const result = yield* executeTool(registry, call({ command: idleCommand, background: true, timeout: 0 }))
+        if (typeof result.metadata?.shellID !== "string") return yield* Effect.die("Missing shell ID")
+        return ID.make(result.metadata.shellID)
+      }).pipe(Effect.provide(locations.get(location)))
+
+      // The tool invocation has released its Location; only the shell and its result reader retain it.
+      yield* TestClock.adjust("1 minute")
+      yield* TestClock.adjust("62 minutes")
+      expect(Array.from(yield* RcMap.keys(locations.rcMap))).toContainEqual(location)
+      const context = yield* locations.contextEffect(location).pipe(Effect.scoped)
+      const shell = Context.get(context, Shell.Service)
+      expect((yield* shell.list()).map((info) => info.id)).toEqual([shellID])
+      yield* shell.timeout(shellID, 1)
+      yield* TestClock.adjust(Duration.millis(1))
+      expect((yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload).toMatchObject({
+        metadata: { source: "shell", shellID, state: "completed", timeout: true },
+      })
+      yield* jobs.awaitOwned(sessionID)
+      expect(yield* jobs.pendingBackground).toEqual([])
+      expect(yield* jobs.activeSessions).toEqual(new Set())
+      yield* TestClock.adjust("62 minutes")
+      expect(Array.from(yield* RcMap.keys(locations.rcMap))).toEqual([])
+    }),
+  )
+
   it.live("returns the shell id for a background command", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -1524,6 +1577,39 @@ describe("ShellTool", () => {
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
     ),
+  )
+
+  it.live("delivers a background shell result after its tool plugin is disposed", () =>
+    Effect.gen(function* () {
+      reset()
+      const tmp = yield* tmpdirScoped()
+      yield* withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const bus = yield* Bus.Service
+          const jobs = yield* Job.Service
+          const shell = yield* Shell.Service
+          const pluginScope = yield* Scope.make()
+          yield* Effect.addFinalizer(() => Scope.close(pluginScope, Exit.void))
+          yield* registerToolPlugin(ShellTool.Plugin).pipe(Scope.provide(pluginScope))
+          const admitted = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+            Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          )
+          const result = yield* executeTool(registry, call({ command: idleCommand, background: true, timeout: 0 }))
+          if (typeof result.metadata?.shellID !== "string") throw new Error("Missing shell ID")
+          const shellID = ID.make(result.metadata.shellID)
+          yield* Scope.close(pluginScope, Exit.void)
+          yield* shell.timeout(shellID, 1)
+
+          expect((yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload).toMatchObject({
+            metadata: { source: "shell", shellID, state: "completed", timeout: true },
+          })
+          yield* jobs.awaitOwned(sessionID)
+          expect(yield* jobs.pendingBackground).toEqual([])
+        }),
+      )
+    }),
   )
 
   it.live("persists a silent command that finishes before backgrounding", () =>

@@ -638,18 +638,43 @@ describe("SessionRestart background recovery", () => {
     Effect.gen(function* () {
       const database = yield* Database.Service
       const jobs = yield* Job.Service
+      const parent = Session.ID.make("ses_background_deleted_parent")
       const sessionID = Session.ID.make("ses_background_deleted")
-      yield* seedSessions(database, [sessionID])
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [sessionID], { parent_id: parent })
       yield* seedBackground(jobs, sessionID, [{ id: "call-deleted-shell", shellID: "sh_deleted", command: "sleep 60" }])
+      for (const output of ["First handoff", "Final handoff"]) {
+        yield* jobs.start({
+          id: sessionID,
+          type: "subagent",
+          recovery: {
+            kind: "subagent",
+            parentSessionID: parent,
+            childSessionID: sessionID,
+            agent: "code",
+            description: "Build",
+          },
+          run: Effect.succeed(output),
+        })
+        yield* jobs.wait({ id: sessionID })
+        yield* jobs.background(sessionID)
+      }
       yield* database.db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie)
 
       const scope = yield* Scope.make()
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
       const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
-      const context = yield* buildExecution(scope, () => Effect.void, undefined, restarted)
+      const context = yield* buildExecution(
+        scope,
+        () => Effect.die("Deleted child must not wake its parent"),
+        undefined,
+        restarted,
+      )
       yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
 
       expect(yield* restarted.pendingBackground).toEqual([])
+      expect(yield* restarted.activeSessions).toEqual(new Set())
+      expect(yield* SessionInbox.list(database.db, parent)).toEqual([])
     }),
   )
 

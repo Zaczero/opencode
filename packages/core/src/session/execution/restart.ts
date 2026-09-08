@@ -195,7 +195,7 @@ export const layer = (options?: Options) =>
 
       const waitForChildBackground = Effect.fnUntraced(function* (childID: SessionSchema.ID) {
         while (yield* jobs.awaitOwned(childID)) {
-          yield* sessions.wait(childID)
+          yield* sessions.wait(childID).pipe(Effect.catchTag("Session.NotFoundError", () => Effect.void))
         }
       })
 

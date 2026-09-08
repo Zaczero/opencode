@@ -1,15 +1,17 @@
 import { describe, expect } from "bun:test"
-import { Effect, Layer, RcMap, Scope } from "effect"
+import { Deferred, Effect, Fiber, Layer, RcMap, Scope } from "effect"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Database } from "@opencode/core/database/database"
 import { Bus } from "@opencode/core/bus"
+import { Job } from "@opencode/core/job"
 import { Instance } from "@opencode/core/instance/service"
 import { Location } from "@opencode/core/location"
 import { Project } from "@opencode/core/project"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionStore } from "@opencode/core/session/store"
@@ -44,6 +46,8 @@ const it = testEffect(
       SessionStore.node,
       SessionEnvironment.node,
       Session.node,
+      Job.node,
+      SessionRestart.node,
       Instance.node,
       LocationServiceMap.node,
     ]),
@@ -57,6 +61,71 @@ const it = testEffect(
 )
 
 describe("Session.remove", () => {
+  it.live("retires child-owned work and parent notifications without stopping another session", () =>
+    Effect.gen(function* () {
+      const temporary = yield* tmpdirScoped()
+      const sessions = yield* Session.Service
+      const jobs = yield* Job.Service
+      const location = Location.Ref.make({ directory: AbsolutePath.make(temporary.path) })
+      const parent = yield* sessions.create({ location })
+      const child = yield* sessions.create({ parentID: parent.id })
+      const other = yield* sessions.create({ location })
+      const stopped = yield* Deferred.make<void>()
+      const otherStopped = yield* Deferred.make<void>()
+      const shell = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: child.id },
+        recovery: { kind: "shell", sessionID: child.id, shellID: "sh_deleted", command: "build" },
+        run: Effect.never.pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
+      })
+      const completed = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: child.id },
+        recovery: { kind: "shell", sessionID: child.id, shellID: "sh_completed", command: "check" },
+        run: Effect.succeed("checked"),
+      })
+      const subagent = yield* jobs.start({
+        id: child.id,
+        type: "subagent",
+        metadata: { sessionID: parent.id, childID: child.id },
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent.id,
+          childSessionID: child.id,
+          agent: "code",
+          description: "Build",
+        },
+        run: Effect.succeed("child idle"),
+      })
+      const unrelated = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: other.id },
+        recovery: { kind: "shell", sessionID: other.id, shellID: "sh_other", command: "other build" },
+        run: Effect.never.pipe(Effect.ensuring(Deferred.succeed(otherStopped, undefined))),
+      })
+      for (const job of [shell, completed, subagent, unrelated]) yield* jobs.background(job.id)
+      yield* jobs.wait({ id: completed.id })
+      yield* jobs.wait({ id: subagent.id })
+      const waiters = yield* Effect.forEach([child.id, parent.id], (id) =>
+        jobs.awaitOwned(id).pipe(Effect.forkScoped({ startImmediately: true })),
+      )
+
+      yield* sessions.remove(child.id)
+
+      expect(yield* Deferred.isDone(stopped)).toBe(true)
+      expect(yield* Deferred.isDone(otherStopped)).toBe(false)
+      expect(yield* Effect.forEach(waiters, Fiber.join)).toEqual([true, true])
+      expect(yield* jobs.activeSessions).toEqual(new Set([other.id]))
+      expect(yield* jobs.pendingBackground).toMatchObject([{ id: unrelated.id, status: "running" }])
+      for (const job of [shell, completed, subagent]) expect(yield* jobs.get(job.id)).toBeUndefined()
+      expect((yield* sessions.get(parent.id)).id).toBe(parent.id)
+      expect(yield* Effect.result(sessions.get(child.id))).toMatchObject({ _tag: "Failure" })
+      yield* sessions.remove(other.id)
+      expect(yield* Deferred.isDone(otherStopped)).toBe(true)
+      expect(yield* jobs.pendingBackground).toEqual([])
+    }),
+  )
+
   it.effect("removes a session and its children", () =>
     Effect.gen(function* () {
       const temporary = yield* tmpdirScoped()

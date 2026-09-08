@@ -387,9 +387,12 @@ const layer = Layer.effect(
         yield* transport.close(sessionID)
         const children = yield* result.list({ parentID: sessionID })
         yield* Effect.forEach(children.data, (child) => result.remove(child.id), { concurrency: 1, discard: true })
-        yield* environments.clear(sessionID)
-        yield* bus.publish(SessionEvent.Deleted, { sessionID })
-        yield* bus.remove(sessionID)
+        yield* Effect.gen(function* () {
+          yield* environments.clear(sessionID)
+          yield* bus.publish(SessionEvent.Deleted, { sessionID })
+          yield* bus.remove(sessionID)
+          yield* jobs.removeSession(sessionID)
+        }).pipe(Effect.uninterruptible)
       }),
       list: Effect.fn("Session.list")(function* (input) {
         return { data: yield* store.list(input) }

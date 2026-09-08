@@ -10,6 +10,45 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Job.node, KV.node])))
 
 describe("Job", () => {
+  it.live("delivers completion after the observer's dispatch scope closes", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const output = yield* Deferred.make<string>()
+      const delivered = yield* Deferred.make<Job.Info>()
+      const job = yield* jobs.start({ type: "shell", run: Deferred.await(output) })
+      yield* jobs.observe(job.id, (info) => Deferred.succeed(delivered, info).pipe(Effect.asVoid)).pipe(Effect.scoped)
+
+      yield* Deferred.succeed(output, "finished after dispatch")
+      expect(yield* Deferred.await(delivered)).toMatchObject({
+        id: job.id,
+        status: "completed",
+        output: "finished after dispatch",
+      })
+    }),
+  )
+
+  it.live("persists shell interruption before its completion observer acknowledges it", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const interrupted = yield* Deferred.make<void>()
+      const owner = SessionSchema.ID.make("ses_interrupted_shell")
+      const job = yield* jobs.start({
+        type: "shell",
+        metadata: { sessionID: owner },
+        recovery: { kind: "shell", sessionID: owner, shellID: "sh_interrupted", command: "build" },
+        run: Deferred.await(interrupted).pipe(Effect.andThen(Effect.interrupt)),
+      })
+      const background = yield* jobs.background(job.id)
+      if (!background?.notificationID) throw new Error("Missing notification identity")
+      yield* Deferred.succeed(interrupted, undefined)
+      expect((yield* jobs.wait({ id: job.id })).info?.status).toBe("cancelled")
+      expect(yield* jobs.pendingBackground).toMatchObject([{ id: job.id, status: "cancelled" }])
+      yield* jobs.completeBackground(background.notificationID)
+      expect(yield* jobs.activeSessions).toEqual(new Set())
+      expect(yield* jobs.awaitOwned(owner)).toBe(false)
+    }),
+  )
+
   it.live("keeps owned work pending until its completion result is delivered", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service

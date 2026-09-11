@@ -169,22 +169,19 @@ const layer = Layer.effect(
                 }
                 const requested = continuation.value.continuation
                 if (requested === undefined) return DrainResult.Complete()
-                // Suspended: Item.make validates synchronously and throws, so constructing it outside
-                // the effect would escape Effect.exit and fail the session on a bad plugin continuation.
+                // Suspended: SyntheticPayload.make validates synchronously and throws, so constructing it
+                // outside the effect would escape Effect.exit and fail the session on a bad continuation.
                 const admitted = yield* restore(
                   Effect.suspend(() =>
-                    inbox.admit({
+                    inbox.admitSynthetic({
                       id: SessionMessage.ID.create(),
                       sessionID,
-                      item: SessionInbox.Item.make({
-                        type: "synthetic",
-                        payload: {
-                          text: requested.text,
-                          description: requested.description,
-                          metadata: requested.metadata,
-                        },
-                        delivery: "steer",
+                      payload: SessionInbox.SyntheticPayload.make({
+                        text: requested.text,
+                        description: requested.description,
+                        metadata: requested.metadata,
                       }),
+                      delivery: "steer",
                     }),
                   ),
                 ).pipe(Effect.exit)

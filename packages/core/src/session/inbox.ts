@@ -201,6 +201,43 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     return admitted
   })
 
+  /** Replacement and withdrawal commit together under the same lock used by promotion. */
+  const admitSynthetic = Effect.fn("SessionInbox.admitSynthetic")(function* (input: {
+    readonly id: SessionMessage.ID
+    readonly sessionID: SessionSchema.ID
+    readonly payload: SyntheticPayload
+    readonly delivery: Delivery
+  }) {
+    const request = {
+      id: input.id,
+      sessionID: input.sessionID,
+      item: { type: "synthetic", payload: input.payload, delivery: input.delivery } satisfies Item,
+    }
+    if (input.payload.slot === undefined) return yield* admit(request)
+    return yield* serialized(
+      input.sessionID,
+      Effect.gen(function* () {
+        const existing = yield* reconcile({ ...input, type: "synthetic" })
+        if (existing) return existing
+        const superseded = (yield* list(db, input.sessionID)).filter(
+          (entry) => entry.type === "synthetic" && entry.payload.slot === input.payload.slot,
+        )
+        const [event] = yield* bus.publishAll([
+          [SessionEvent.InboxEnqueued, { inboxID: input.id, sessionID: input.sessionID, item: request.item }],
+          ...superseded.map(
+            (entry) => [SessionEvent.InboxCancelled, { sessionID: input.sessionID, inboxID: entry.id }] as const,
+          ),
+        ])
+        return Synthetic.make({
+          id: input.id,
+          sessionID: input.sessionID,
+          timeCreated: DateTime.makeUnsafe(event.created),
+          ...request.item,
+        })
+      }),
+    )
+  })
+
   const admitCompaction = Effect.fn("SessionInbox.admitCompaction")(function* (input: {
     readonly id: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
@@ -263,6 +300,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     list: (sessionID: SessionSchema.ID) => list(db, sessionID),
     reconcile,
     admit,
+    admitSynthetic,
     admitCompaction,
     cancel,
     steer,

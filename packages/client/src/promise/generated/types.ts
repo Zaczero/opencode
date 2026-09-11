@@ -142,7 +142,12 @@ export type SessionActive = { type: "execution" | "background" }
 
 export type SessionInboxDelivery = "steer" | "queue"
 
-export type SessionInboxSyntheticPayload = { text: string; description?: string; metadata?: { [x: string]: JsonValue } }
+export type SessionInboxSyntheticPayload = {
+  text: string
+  description?: string
+  metadata?: { [x: string]: JsonValue }
+  slot?: string
+}
 
 export type SessionInboxCompactionPayload = {}
 
@@ -150,7 +155,12 @@ export type InstructionEntryKey = string
 
 export type SessionGenerateResponse = { data: { text: string } }
 
-export type SessionInboxSyntheticPayload1 = { text: string; description?: string; metadata?: { [x: string]: any } }
+export type SessionInboxSyntheticPayload1 = {
+  text: string
+  description?: string
+  metadata?: { [x: string]: any }
+  slot?: string
+}
 
 export type ShellInfo = {
   id: string
@@ -4053,6 +4063,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["id"]
@@ -4061,6 +4072,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["text"]
@@ -4069,6 +4081,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["description"]
@@ -4077,14 +4090,25 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["metadata"]
+  readonly slot?: {
+    readonly id?: string | null
+    readonly text: string
+    readonly description?: string | null
+    readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
+    readonly delivery?: ("steer" | "queue") | null
+    readonly resume?: boolean | null
+  }["slot"]
   readonly delivery?: {
     readonly id?: string | null
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["delivery"]
@@ -4093,6 +4117,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["resume"]

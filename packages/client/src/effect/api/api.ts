@@ -306,6 +306,7 @@ export type SessionSyntheticInput = {
   readonly text: string
   readonly description?: string | undefined
   readonly metadata?: { readonly [x: string]: unknown } | undefined
+  readonly slot?: string | undefined
   readonly delivery?: SessionInbox.Delivery | undefined
   readonly resume?: boolean | undefined
 }

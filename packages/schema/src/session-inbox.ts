@@ -22,6 +22,14 @@ export const SyntheticPayload = Schema.Struct({
   text: Schema.String,
   description: Schema.String.pipe(optional),
   metadata: Schema.Record(Schema.String, Schema.Unknown).pipe(optional),
+  /**
+   * Collapse slot. A Session holds at most one undelivered synthetic per slot: admitting one
+   * withdraws the synthetic still waiting under the same slot, so a producer that reports a
+   * recurring snapshot keeps one pending entry carrying its newest state rather than a queue
+   * of stale ones. Delivered messages are never affected -- the model has already read them,
+   * and the slot does not survive into the message the delivery creates.
+   */
+  slot: Schema.String.pipe(optional),
 }).annotate({ identifier: "Session.Inbox.SyntheticPayload" })
 
 export interface CompactionPayload extends Schema.Schema.Type<typeof CompactionPayload> {}

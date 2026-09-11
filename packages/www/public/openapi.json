@@ -2576,6 +2576,9 @@
                   "metadata": {
                     "type": "object"
                   },
+                  "slot": {
+                    "type": "string"
+                  },
                   "delivery": {
                     "anyOf": [
                       {
@@ -17925,6 +17928,9 @@
           },
           "metadata": {
             "type": "object"
+          },
+          "slot": {
+            "type": "string"
           }
         },
         "required": ["text"],

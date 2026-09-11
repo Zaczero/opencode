@@ -404,6 +404,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           text: Schema.String,
           description: Schema.String.pipe(Schema.optional),
           metadata: SessionMessage.Synthetic.fields.metadata,
+          slot: SessionInbox.SyntheticPayload.fields.slot,
           delivery: SessionInbox.Delivery.pipe(Schema.optional),
           resume: Schema.Boolean.pipe(Schema.optional),
         }),

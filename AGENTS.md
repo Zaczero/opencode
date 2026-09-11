@@ -41,6 +41,26 @@ Valid types are `feat`, `fix`, `docs`, `chore`, `refactor`, and `test`. Scopes a
 
 Examples: `fix(tui): simplify thinking toggle styling`, `docs: update contributing guide`, `chore(sdk): regenerate types`.
 
+## Fork History
+
+Each commit is cherry-pickable and carries one complete feature or bug fix, including
+its tests, generated artifacts, and required guidance. Fold corrections into the
+owning commit; do not append follow-up or integration commits for the same feature.
+A commit that repairs, extends, or only speeds up another fork commit's feature
+belongs in that commit; audit the series for such pairs on every rewrite. Keep
+independent changes in separate commits, and give each a body that says why.
+
+Refresh the fork onto the newest upstream release tag. Re-apply each commit's intent
+to the new base rather than replaying its text: drop what upstream now resolves,
+adapt to changed upstream seams, and carry repeated optimizations to new sister
+sites. Preserve upstream ancestry. A fix to upstream-owned behavior may remain a
+standalone fork commit. Verify the final tree and range-diff after rewriting;
+publish an authorized rewrite with an explicit `--force-with-lease=<ref>:<expected-sha>`.
+Use the Conventional Commit style above, not the NixOS repository's commit style.
+
+Installing a distribution does not authorize restarting the shared service or an
+existing TUI. Those restarts require explicit user approval.
+
 ## Style Guide
 
 ### General Principles

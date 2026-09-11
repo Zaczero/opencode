@@ -3,10 +3,11 @@ export * as SubagentTool from "./subagent.js"
 import { ToolFailure } from "@opencode/ai"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
-import { Effect, Schema } from "effect"
+import { Duration, Effect, Schema } from "effect"
 import { Agent } from "../../agent.js"
 import { Config } from "../../config.js"
 import { Model } from "../../model.js"
+import { Job } from "../../job.js"
 import { Session } from "../../session.js"
 import { SubagentJob } from "../../session/subagent-job.js"
 import { Permission } from "../../permission.js"
@@ -18,13 +19,14 @@ const NO_TEXT = "Subagent completed without a text response."
 const MAX_LISTED_SUBAGENTS = 30
 const ABORT_POLICY =
   "ABORT CONDITION: stop and report instead of working around it when the task is broken rather than merely hard -- when finishing would mean building on something that is not true. Say what is incoherent, give the evidence, and name what would unblock you: a correction, a decision that is not yours, or more reasoning than you have. Halting is free here. This session is resumable, your report is read in full, and the work resumes from where you stopped. A diff built on a broken premise is the outcome that cannot be recovered. This is not licence to stop on difficulty. Hard, long, unfamiliar and tedious work is yours to finish. Quietly narrowing the task to something you can complete, or shipping a lesser mechanism without saying so, is the failure this prevents."
+/** How long the interrupt tool waits for the child's cleanup before reporting the stop as merely accepted. */
+const INTERRUPT_SETTLEMENT = Duration.seconds(15)
 const backgroundResult = (sessionID: SessionSchema.ID) => ({
   sessionID,
   status: "running" as const,
   output: [
     `The subagent is working in the background (sessionID: ${sessionID}). You will be notified automatically when it finishes.`,
-    "DO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work; avoid working with the same files or topics it is using.",
-    "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+    "Do not poll, request status, or duplicate its work. Continue independent work; if none remains, end your response and wait for the completion notification.",
   ].join("\n"),
 })
 
@@ -69,7 +71,7 @@ export const description = [
   "With sessionID, this adds the prompt to the same child conversation and preserves its history.",
   "Every call runs in the background and returns immediately. You are notified when it finishes; do not poll progress.",
   "Continue a running child to steer it instead of dispatching duplicate work.",
-  "To stop a child, continue its session with a prompt telling it to stop now and abort the work.",
+  "Use subagent_interrupt to stop a child without a model round-trip; its conversation remains resumable.",
 ].join("\n")
 
 export const Plugin = {
@@ -79,6 +81,7 @@ export const Plugin = {
     const subagents = yield* SubagentJob.make
     const agents = yield* Agent.Service
     const config = yield* Config.Service
+    const jobs = yield* Job.Service
     const permission = yield* Permission.Service
     const models = yield* Model.Service
 
@@ -300,6 +303,51 @@ export const Plugin = {
                     : "Not running.",
                   "",
                   output,
+                ].join("\n"),
+              )
+            }),
+        })
+        draft.add({
+          name: "subagent_interrupt",
+          options: { codemode: false, permission: name },
+          description: `Interrupt a direct child's execution and cancel its background shells without a model round-trip. Wait up to ${Duration.toSeconds(INTERRUPT_SETTLEMENT)} seconds for cleanup, then report whether it stopped or is still stopping. Continue its conversation later with subagent.`,
+          input: InspectInput,
+          output: InspectOutput,
+          execute: (input, context) =>
+            Effect.gen(function* () {
+              const child = yield* ownChild(context.sessionID, input.sessionID)
+              if (!child)
+                return inspectResult(
+                  `Cannot interrupt subagent ${input.sessionID}: it was not launched from this session.`,
+                )
+              // The child's own shells go first: a result arriving after the stop would otherwise wake it, and
+              // the cancelled notice its parent is owed waits for child-owned work to drain.
+              const shells = (yield* jobs.running(child.id)).filter((job) => job.type === "shell")
+              yield* Effect.forEach(shells, (job) => jobs.cancel(job.id), { discard: true })
+              // Interruption acknowledges before cleanup settles; report which of the two the parent has.
+              const interrupted = yield* sessions.interrupt(child.id).pipe(Effect.orElseSucceed(() => false))
+              const settled = interrupted
+                ? yield* sessions.wait(child.id).pipe(
+                    Effect.timeout(INTERRUPT_SETTLEMENT),
+                    Effect.as(true),
+                    Effect.orElseSucceed(() => false),
+                  )
+                : true
+              return inspectResult(
+                [
+                  `subagent ${child.id} (${child.title ?? "subagent"})`,
+                  interrupted
+                    ? settled
+                      ? "Interrupted; its turn has stopped."
+                      : "Interrupt accepted; its turn is still stopping."
+                    : "Not running; nothing to interrupt.",
+                  ...(shells.length > 0
+                    ? [
+                        `Cancelled ${shells.length} background shell${shells.length === 1 ? "" : "s"} it launched: ${shells.map((job) => job.title ?? job.id).join("; ")}`,
+                      ]
+                    : []),
+                  ...(interrupted ? ['A <subagent state="cancelled"> notice follows once its cleanup settles.'] : []),
+                  `Its conversation is intact. Continue it with subagent sessionID=${child.id} and new instructions; it does not resume on its own.`,
                 ].join("\n"),
               )
             }),

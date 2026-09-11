@@ -531,6 +531,9 @@ export const make = Effect.gen(function* () {
       }),
     )
     if (result.info && result.done) yield* Deferred.succeed(result.done, result.info)
+    // A deliberate cancellation is the one cancelled subagent outcome its parent must hear about live;
+    // `settle` skips cancelled subagents because scope closure there means the session itself is gone.
+    if (result.background?.recovery.kind === "subagent") yield* notifyBackgroundSettled(result.background)
     if (result.scope) yield* Scope.close(result.scope, Exit.void)
     if (result.generation) yield* consume(id, result.generation)
     return result.info

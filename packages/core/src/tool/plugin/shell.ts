@@ -171,6 +171,8 @@ export const Plugin = {
               ...(info.notificationID ? { id: info.notificationID } : {}),
               sessionID,
               description: command,
+              // A cancellation is someone stopping this session's work; its notice must not restart it.
+              ...(info.status === "cancelled" ? { resume: false } : {}),
               ...ShellResult.notification({
                 jobID: id,
                 shellID,

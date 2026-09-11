@@ -160,7 +160,7 @@ describe("SessionExecution lifecycle", () => {
     }),
   )
 
-  it.effect("does not resume a user-cancelled background child whose notification was not admitted", () =>
+  it.effect("notifies the parent of a user-cancelled background child live and never resumes it", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
       const parent = Session.ID.make("ses_cancelled_background_parent")
@@ -195,8 +195,16 @@ describe("SessionExecution lifecycle", () => {
       yield* Deferred.await(running)
       expect(yield* execution.interrupt(child)).toBeTrue()
       yield* execution.awaitIdle(child)
-      expect((yield* jobs.wait({ id: child })).info?.status).toBe("cancelled")
-      expect(yield* jobs.pendingBackground).toMatchObject([{ id: child, status: "cancelled" }])
+      // A deliberate cancellation reaches the parent live and retires its marker; nothing waits for a restart.
+      const notices = yield* SessionInbox.list(database.db, parent).pipe(
+        Effect.repeat({ until: (items) => items.length > 0 }),
+      )
+      expect(notices).toMatchObject([
+        { payload: { text: expect.stringContaining("Subagent cancelled"), metadata: { state: "cancelled" } } },
+      ])
+      yield* jobs.pendingBackground.pipe(Effect.repeat({ until: (pending) => pending.length === 0 }))
+      // Acknowledging the notice retires the finished job itself.
+      yield* jobs.get(child).pipe(Effect.repeat({ until: (job) => job === undefined }))
       expect((yield* claims(database))[child]).toBe(false)
       yield* Scope.close(scope, Exit.void)
 
@@ -212,10 +220,8 @@ describe("SessionExecution lifecycle", () => {
       )
       yield* Context.get(restarted, SessionRestart.Service).resumeSuspendedSessions
       yield* Context.get(restarted, SessionExecution.Service).awaitIdle(parent)
-      expect(drained).toEqual([parent])
-      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
-        { payload: { text: expect.stringContaining("Subagent cancelled"), metadata: { state: "cancelled" } } },
-      ])
+      expect(drained).not.toContain(child)
+      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject(notices)
       expect(yield* restartedJobs.pendingBackground).toEqual([])
     }),
   )

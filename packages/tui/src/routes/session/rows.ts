@@ -1,5 +1,10 @@
-import type { SessionInboxEnqueued, SessionMessageAssistant, SessionMessageInfo } from "@opencode-ai/client"
-import { createEffect, on, onCleanup, type Accessor } from "solid-js"
+import type {
+  SessionInboxEnqueued,
+  SessionInboxInfo,
+  SessionMessageAssistant,
+  SessionMessageInfo,
+} from "@opencode-ai/client"
+import { createEffect, createMemo, on, onCleanup, type Accessor } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useConfig } from "../../config"
 import { useData } from "../../context/data"
@@ -18,6 +23,7 @@ export type CacheUsage = {
 export type SessionRow =
   | { type: "message"; messageID: string }
   | { type: "compaction-queued"; inboxID: string }
+  | { type: "notice-queued"; inboxID: string; description: string }
   | { type: "part"; ref: PartRef }
   | {
       type: "group"
@@ -35,6 +41,19 @@ export type SessionRow =
   | { type: "assistant-footer"; messageID: string }
   | { type: "turn-usage"; messageIDs: string[]; previousCache?: CacheUsage }
 
+/** Queued inputs stay distinct from delivered messages in both rendering and reactive updates. */
+function queuedPresentation(item: SessionInboxInfo): { hidden?: string; row?: SessionRow } | undefined {
+  if (item.type === "compaction") return { row: { type: "compaction-queued", inboxID: item.id } }
+  if (item.delivery !== "queue") return undefined
+  if (item.type === "user") return { hidden: item.id }
+  if (item.type !== "synthetic") return undefined
+  const description = item.payload.description?.trim()
+  return {
+    hidden: item.id,
+    row: description ? { type: "notice-queued", inboxID: item.id, description } : undefined,
+  }
+}
+
 export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessionID: string) => void) {
   const data = useData()
   const client = useClient()
@@ -43,14 +62,16 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
   const revertBoundary = () => data.session.get(sessionID())?.revert?.messageID
   const turnTokens = () => Boolean(config.data.debug?.turn_tokens)
 
+  const queued = createMemo(() =>
+    data.session.pending.list(sessionID()).flatMap((item) => queuedPresentation(item) ?? []),
+  )
+
   function reduce() {
     const messages = data.session.message.list(sessionID())
     const inputs = new Set(data.session.input.list(sessionID()))
-    const pending = data.session.pending.list(sessionID())
-    const queued = new Set(
-      pending.flatMap((item) => (item.type === "user" && item.delivery === "queue" ? [item.id] : [])),
-    )
-    const visible = queued.size === 0 ? messages : messages.filter((message) => !queued.has(message.id))
+    const presentations = queued()
+    const hidden = new Set(presentations.flatMap((item) => item.hidden ?? []))
+    const visible = hidden.size === 0 ? messages : messages.filter((message) => !hidden.has(message.id))
     const boundary = revertBoundary()
     const rows = reduceSessionRows(
       boundary ? visible.filter((message) => message.id < boundary) : visible,
@@ -59,13 +80,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
     )
     partitionPending(rows, pendingPermissions())
     const position = rows.findIndex((row) => row.type === "message" && inputs.has(row.messageID))
-    rows.splice(
-      position === -1 ? rows.length : position,
-      0,
-      ...pending
-        .filter((item) => item.type === "compaction")
-        .map((item): SessionRow => ({ type: "compaction-queued", inboxID: item.id })),
-    )
+    rows.splice(position === -1 ? rows.length : position, 0, ...presentations.flatMap((item) => item.row ?? []))
     return rows
   }
 
@@ -114,18 +129,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
     ),
   )
 
-  createEffect(
-    on(
-      () =>
-        data.session.pending.list(sessionID()).flatMap((item) => {
-          if (item.type === "compaction") return [`${item.id}:compaction`]
-          if (item.type === "user" && item.delivery === "queue") return [`${item.id}:queue`]
-          return []
-        }),
-      () => setRows(reconcile(reduce())),
-      { defer: true },
-    ),
-  )
+  createEffect(on(queued, () => setRows(reconcile(reduce())), { defer: true }))
 
   createEffect(
     on(
@@ -201,9 +205,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
   }
 
   const queuedStart = (rows: SessionRow[]) => {
-    const index = rows.findIndex(
-      (row) => row.type === "compaction-queued" || (row.type === "message" && isPending(row.messageID)),
-    )
+    const index = rows.findIndex((row) => "inboxID" in row || (row.type === "message" && isPending(row.messageID)))
     return index === -1 ? rows.length : index
   }
 

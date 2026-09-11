@@ -6,7 +6,7 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Bus } from "@opencode-ai/core/bus"
 import { Event } from "@opencode-ai/schema/event"
 import { Expected } from "../../../../core/test/lib/session-message"
-import { createEffect, onMount, type ParentProps } from "solid-js"
+import { createEffect, For, Show, onMount, type ParentProps } from "solid-js"
 import { ConfigProvider } from "../../../src/config"
 import { ClientProvider, useClient } from "../../../src/context/client"
 import { DataProvider as DataProviderBase, useData } from "../../../src/context/data"
@@ -14,6 +14,7 @@ import { Keymap } from "../../../src/context/keymap"
 import { LocationProvider, useLocation } from "../../../src/context/location"
 import { RouteProvider } from "../../../src/context/route"
 import { ThemeProvider } from "../../../src/context/theme"
+import { NoticeQueued } from "../../../src/routes/session"
 import { Composer } from "../../../src/routes/session/composer"
 import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
@@ -1028,6 +1029,160 @@ test("updates and removes queued inputs from durable lifecycle events", async ()
     await wait(() => !data.session.input.has(sessionID, "message-cancelled"))
     expect(data.session.pending.list(sessionID).map((item) => item.id)).toEqual(["message-queued"])
     expect(data.session.message.get(sessionID, "message-cancelled")).toBeUndefined()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("holds a queued notice out of the transcript until it is delivered", async () => {
+  const events = createEventStream()
+  const sessionID = "session-queued-notice"
+  const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/message`) return json({ data: [], cursor: {} })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let rows!: ReturnType<typeof createSessionRows>
+  let client!: ReturnType<typeof useClient>
+
+  function Probe() {
+    client = useClient()
+    data = useData()
+    rows = createSessionRows(() => sessionID)
+    return (
+      <For each={rows}>
+        {(row) => (
+          <Show when={row.type === "notice-queued" ? row : undefined}>
+            {(notice) => <NoticeQueued description={notice().description} />}
+          </Show>
+        )}
+      </For>
+    )
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <ThemeProvider mode="dark" source={emptyThemeSource}>
+              <Probe />
+            </ThemeProvider>
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client?.connection.status() === "connected")
+    emitEvent(events, {
+      id: "evt_notice_admitted",
+      created: 1,
+      type: "session.inbox.enqueued",
+      durable: durable(sessionID),
+      data: {
+        sessionID,
+        inboxID: "notice-queued",
+        item: {
+          type: "synthetic",
+          payload: { text: "4 children running", description: "4 children running" },
+          delivery: "queue",
+        },
+      },
+    })
+    await wait(() => data.session.pending.list(sessionID).length === 1)
+    expect(rows).not.toContainEqual({ type: "message", messageID: "notice-queued" })
+    expect(rows).toContainEqual({
+      type: "notice-queued",
+      inboxID: "notice-queued",
+      description: "4 children running",
+    })
+
+    await app.renderOnce()
+    expect(
+      app
+        .captureCharFrame()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean)
+        .join("\n"),
+    ).toMatchInlineSnapshot(`"   ◇ 4 children running · queued"`)
+
+    emitEvent(events, {
+      id: "evt_notice_delivered",
+      created: 2,
+      type: "session.inbox.delivered",
+      durable: durable(sessionID, 1),
+      data: { sessionID, inboxID: "notice-queued" },
+    })
+    await wait(() => data.session.pending.list(sessionID).length === 0)
+    expect(rows).toContainEqual({ type: "message", messageID: "notice-queued" })
+    expect(rows.some((row) => row.type === "notice-queued")).toBe(false)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("withdraws a superseded queued notice from the transcript", async () => {
+  const events = createEventStream()
+  const sessionID = "session-collapsed-notice"
+  const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/message`) return json({ data: [], cursor: {} })
+  }, events)
+  let data!: ReturnType<typeof useData>
+  let rows!: ReturnType<typeof createSessionRows>
+  let client!: ReturnType<typeof useClient>
+
+  function Probe() {
+    client = useClient()
+    data = useData()
+    rows = createSessionRows(() => sessionID)
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <TestTuiContexts>
+      <ClientProvider api={createApi(calls.fetch)}>
+        <ProjectProvider>
+          <DataProvider>
+            <Probe />
+          </DataProvider>
+        </ProjectProvider>
+      </ClientProvider>
+    </TestTuiContexts>
+  ))
+
+  try {
+    await wait(() => client.connection.status() === "connected")
+    for (const [index, description] of ["3 children running", "6 children running"].entries())
+      emitEvent(events, {
+        id: `evt_notice_${index}`,
+        created: index + 1,
+        type: "session.inbox.enqueued",
+        durable: durable(sessionID, index),
+        data: {
+          sessionID,
+          inboxID: `notice-${index}`,
+          item: {
+            type: "synthetic",
+            payload: { text: description, description },
+            delivery: "queue",
+          },
+        },
+      })
+    await wait(() => data.session.pending.list(sessionID).length === 2)
+
+    emitEvent(events, {
+      id: "evt_notice_withdrawn",
+      created: 3,
+      type: "session.inbox.cancelled",
+      durable: durable(sessionID, 2),
+      data: { sessionID, inboxID: "notice-0" },
+    })
+    await wait(() => !data.session.input.has(sessionID, "notice-0"))
+    expect(rows.flatMap((row) => (row.type === "notice-queued" ? [row.description] : []))).toEqual([
+      "6 children running",
+    ])
   } finally {
     app.renderer.destroy()
   }

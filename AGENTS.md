@@ -185,6 +185,9 @@ const table = sqliteTable("session", {
 - Avoid mocks as much as possible, you shouldn't be using globalThis.\* at all unless it's the only option.
 - Test actual implementation, do not duplicate logic into tests
 - Tests cannot run from repo root (guard: `do-not-run-tests-from-root`); run from package directories such as `packages/core`.
+- In `packages/core`, run `bun run test [files]`. Its `script/test.ts` wrapper isolates
+  `HOME`, XDG roots, and credentials. Direct `bun test` loads the developer's plugins;
+  the host's shell policy can then reject test commands before they start.
 
 ## Type Checking
 

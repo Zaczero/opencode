@@ -512,7 +512,6 @@ describe("LocationServiceMap", () => {
           const blockedTools = blockedState.tools.map((tool) => tool.name)
           expect(blockedTools.filter((name) => name !== "execute").sort()).toEqual([
             "apply_patch",
-            "edit",
             "glob",
             "grep",
             "question",
@@ -525,7 +524,6 @@ describe("LocationServiceMap", () => {
             "subagent_output",
             "webfetch",
             "websearch",
-            "write",
           ])
           const allowedState = yield* update(allowed.path, allowedID)
           expect(allowedState.providers.some((provider) => provider.id === allowedID)).toBe(true)
@@ -534,7 +532,6 @@ describe("LocationServiceMap", () => {
           expect(blockedTools.includes("execute")).toBe(allowedTools.includes("execute"))
           expect(allowedTools.filter((name) => name !== "execute").sort()).toEqual([
             "apply_patch",
-            "edit",
             "glob",
             "grep",
             "question",
@@ -547,7 +544,6 @@ describe("LocationServiceMap", () => {
             "subagent_output",
             "webfetch",
             "websearch",
-            "write",
           ])
         }),
       ),

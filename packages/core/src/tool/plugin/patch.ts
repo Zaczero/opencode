@@ -116,7 +116,9 @@ export const Plugin = {
               }
               if (!input.patchText) return yield* new ToolFailure({ message: "patchText is required" })
               const hunks = yield* Effect.fromResult(parsed).pipe(
-                Effect.mapError((error) => new ToolFailure({ message: `apply_patch verification failed: ${error.message}` })),
+                Effect.mapError(
+                  (error) => new ToolFailure({ message: `apply_patch verification failed: ${error.message}` }),
+                ),
               )
               if (hunks.length === 0) {
                 return yield* new ToolFailure({ message: "apply_patch rejected: empty patch" })
@@ -182,7 +184,8 @@ export const Plugin = {
                   const before = Bom.split(original).text
                   const update = yield* Effect.try({
                     try: () => Patch.derive(hunk.path, hunk.chunks, original),
-                    catch: (error) => new ToolFailure({ message: `apply_patch verification failed: ${errorMessage(error)}` }),
+                    catch: (error) =>
+                      new ToolFailure({ message: `apply_patch verification failed: ${errorMessage(error)}` }),
                   })
                   const moveTarget = hunk.movePath ? yield* resolveTarget(hunk.movePath) : undefined
                   prepared.push({
@@ -307,19 +310,6 @@ export const Plugin = {
         }),
       )
       .pipe(Effect.orDie)
-
-    yield* ctx.session.hook("context", (event) =>
-      Effect.sync(() => {
-        const usePatch =
-          event.model.id.includes("gpt-") && !event.model.id.includes("oss") && !event.model.id.includes("gpt-4")
-        if (usePatch) {
-          delete event.tools.edit
-          delete event.tools.write
-          return
-        }
-        delete event.tools[name]
-      }),
-    )
   }),
 }
 

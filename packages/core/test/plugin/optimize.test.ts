@@ -32,7 +32,7 @@ const context = (id: string, system = fallback): SessionHooks["context"] => ({
   system: [SystemPart.make(system)],
   messages: [],
   tools: Object.fromEntries(
-    ["shell", "read", "grep", "glob", "edit", "write", "patch"].map((name) => [
+    ["shell", "read", "grep", "glob", "apply_patch"].map((name) => [
       name,
       { description: name, input: { type: "object" } },
     ]),
@@ -47,8 +47,7 @@ describe("OptimizePlugin", () => {
     expect(PROMPT_META).toContain("`subagent` tool")
     expect(PROMPT_META).toContain("Reserve `shell`")
     expect(PROMPT_META).toContain("`read` for reading files")
-    expect(PROMPT_META).toContain("`edit` for editing")
-    expect(PROMPT_META).toContain("`write` for creating files")
+    expect(PROMPT_META).toContain("`apply_patch` for creating and editing files")
     expect(PROMPT_META).toContain("Follow that reminder for the files you may edit")
     expect(PROMPT_META).toContain("https://opencode.ai/v2/docs/")
     expect(PROMPT_META).not.toMatch(
@@ -133,9 +132,8 @@ describe("OptimizePlugin", () => {
       expect(event.system[0]?.text).toStartWith("You are an AI agent powered by OpenCode")
       expect(event.system[0]?.text).toContain("Prefer dedicated tools over shell commands")
       expect(event.system[0]?.text).not.toContain("${OPENCODE_TOOL_GUIDANCE}")
-      expect(event.system[0]?.text).toContain("Use the write tool")
-      expect(event.system[0]?.text).toContain("Use the edit tool")
-      expect(Object.keys(event.tools).sort()).toEqual(["edit", "glob", "grep", "patch", "read", "shell", "write"])
+      expect(event.system[0]?.text).toContain("Use apply_patch to create, update, delete, or rename text files")
+      expect(Object.keys(event.tools).sort()).toEqual(["apply_patch", "glob", "grep", "read", "shell"])
     }),
   )
 
@@ -146,17 +144,17 @@ describe("OptimizePlugin", () => {
       yield* OptimizePlugin.OpenAIToolsPlugin.effect(pluginHost)
       yield* OptimizePlugin.AnthropicToolsPlugin.effect(pluginHost)
       const cases = [
-        ["openai", "gpt-5", ["edit", "patch", "read", "shell", "write"]],
-        ["openrouter", "openai/gpt-6-astra", ["edit", "patch", "read", "shell", "write"]],
-        ["azure", "GPT-4.1", ["edit", "patch", "read", "shell", "write"]],
-        ["groq", "openai/gpt-oss-120b", ["edit", "patch", "read", "shell", "write"]],
-        ["anthropic", "claude-opus-4-8", ["edit", "patch", "read", "shell", "write"]],
-        ["amazon-bedrock", "us.anthropic.Claude-sonnet-4-6", ["edit", "patch", "read", "shell", "write"]],
-        ["github-copilot", "claude-sonnet-4.6", ["edit", "patch", "read", "shell", "write"]],
-        ["google", "gemini-2.5-pro", ["edit", "glob", "grep", "patch", "read", "shell", "write"]],
-        ["moonshotai", "kimi-k2", ["edit", "glob", "grep", "patch", "read", "shell", "write"]],
-        ["openai", "o3", ["edit", "glob", "grep", "patch", "read", "shell", "write"]],
-        ["anthropic", "other-model", ["edit", "glob", "grep", "patch", "read", "shell", "write"]],
+        ["openai", "gpt-5", ["apply_patch", "read", "shell"]],
+        ["openrouter", "openai/gpt-6-astra", ["apply_patch", "read", "shell"]],
+        ["azure", "GPT-4.1", ["apply_patch", "read", "shell"]],
+        ["groq", "openai/gpt-oss-120b", ["apply_patch", "read", "shell"]],
+        ["anthropic", "claude-opus-4-8", ["apply_patch", "read", "shell"]],
+        ["amazon-bedrock", "us.anthropic.Claude-sonnet-4-6", ["apply_patch", "read", "shell"]],
+        ["github-copilot", "claude-sonnet-4.6", ["apply_patch", "read", "shell"]],
+        ["google", "gemini-2.5-pro", ["apply_patch", "glob", "grep", "read", "shell"]],
+        ["moonshotai", "kimi-k2", ["apply_patch", "glob", "grep", "read", "shell"]],
+        ["openai", "o3", ["apply_patch", "glob", "grep", "read", "shell"]],
+        ["anthropic", "other-model", ["apply_patch", "glob", "grep", "read", "shell"]],
       ] as const
 
       yield* Effect.forEach(
@@ -188,18 +186,18 @@ describe("OptimizePlugin", () => {
           const event = context("gpt-5")
           yield* hooks.trigger("session", "context", event)
           expect(event.system[0]?.text).toContain("# Delegation")
-          expect(Object.keys(event.tools).sort()).toEqual(["edit", "patch", "read", "shell", "write"])
+          expect(Object.keys(event.tools).sort()).toEqual(["apply_patch", "read", "shell"])
         }),
       )
 
       const event = context("gpt-5")
       yield* hooks.trigger("session", "context", event)
       expect(event.system[0]?.text).toContain("# Delegation")
-      expect(Object.keys(event.tools).sort()).toEqual(["edit", "glob", "grep", "patch", "read", "shell", "write"])
+      expect(Object.keys(event.tools).sort()).toEqual(["apply_patch", "glob", "grep", "read", "shell"])
       const claude = context("claude-sonnet-4-6")
       yield* hooks.trigger("session", "context", claude)
       expect(claude.system.map((part) => part.text)).toEqual([fallback])
-      expect(Object.keys(claude.tools).sort()).toEqual(["edit", "patch", "read", "shell", "write"])
+      expect(Object.keys(claude.tools).sort()).toEqual(["apply_patch", "read", "shell"])
     }),
   )
 
@@ -259,7 +257,7 @@ describe("OptimizePlugin", () => {
       yield* hooks.trigger("session", "context", event)
 
       expect(event.system.map((part) => part.text)).toEqual(["Custom agent prompt"])
-      expect(Object.keys(event.tools).sort()).toEqual(["edit", "glob", "grep", "patch", "read", "shell", "write"])
+      expect(Object.keys(event.tools).sort()).toEqual(["apply_patch", "glob", "grep", "read", "shell"])
     }),
   )
 
@@ -276,7 +274,7 @@ describe("OptimizePlugin", () => {
       yield* hooks.trigger("session", "context", event)
 
       expect(event.system.map((part) => part.text)).toEqual([fallback])
-      expect(Object.keys(event.tools).sort()).toEqual(["edit", "patch", "read", "shell", "write"])
+      expect(Object.keys(event.tools).sort()).toEqual(["apply_patch", "read", "shell"])
     }),
   )
 
@@ -327,7 +325,7 @@ describe("OptimizePlugin", () => {
             const event = context(id)
             yield* hooks.trigger("session", "context", event)
             expect(event.system[0]?.text).toContain(prompt)
-            expect(Object.keys(event.tools).sort()).toEqual(["edit", "glob", "grep", "patch", "read", "shell", "write"])
+            expect(Object.keys(event.tools).sort()).toEqual(["apply_patch", "glob", "grep", "read", "shell"])
           }),
         { discard: true },
       )

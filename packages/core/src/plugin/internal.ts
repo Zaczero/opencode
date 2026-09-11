@@ -62,7 +62,6 @@ import { Skill } from "../skill.js"
 import { SkillDiscovery } from "../skill/discovery.js"
 import { Watcher } from "../filesystem/watcher.js"
 import { PatchTool } from "../tool/plugin/patch.js"
-import { EditTool } from "../tool/plugin/edit.js"
 import { GlobTool } from "../tool/plugin/glob.js"
 import { GrepTool } from "../tool/plugin/grep.js"
 import { OpenCodeTools } from "../tool/plugin/opencode.js"
@@ -77,7 +76,6 @@ import { ToolOutput } from "../tool-output.js"
 import { WebFetchTool } from "../tool/plugin/webfetch.js"
 import { WebSearchTool } from "../tool/plugin/websearch.js"
 import { WellKnown } from "../wellknown.js"
-import { WriteTool } from "../tool/plugin/write.js"
 import { AgentPlugin } from "./agent.js"
 import BrowserPlugin from "@opencode-ai/plugin-browser"
 import { CommandPlugin } from "./command.js"
@@ -207,9 +205,7 @@ const pre = [
   ...ProviderPlugins,
   ...WebSearchPlugins,
   PatchTool.Plugin,
-  // Render model prompts after the patch plugin selects the available editing tools.
   ...OptimizePlugin.Plugins,
-  EditTool.Plugin,
   GlobTool.Plugin,
   GrepTool.Plugin,
   OpenCodeTools.Plugin,
@@ -220,7 +216,6 @@ const pre = [
   SubagentTool.Plugin,
   WebFetchTool.Plugin,
   WebSearchTool.Plugin,
-  WriteTool.Plugin,
   WarmingPlugin.Plugin,
 ] as const satisfies readonly InternalPlugin[]
 

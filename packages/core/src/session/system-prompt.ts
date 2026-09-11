@@ -14,15 +14,8 @@ export function render(prompt: string, tools: string[]) {
       "- Do not chain shell commands with separators like `echo \"====\";` or `printf '---'`; the output becomes noisy in a way that makes the user's side of the conversation worse.",
     )
   }
-  if (tools.includes("write")) {
-    instructions.push(
-      "- Use the write tool to create files or completely replace their content. Prefer using the edit tool for targeted changes.",
-    )
-  }
-  if (tools.includes("edit")) {
-    instructions.push(
-      "- Use the edit tool for targeted changes to existing text files. It replaces the exact text in `oldString` with `newString`, and the values must differ. By default, `oldString` must occur exactly once. If it occurs multiple times, include more surrounding context to make it unique or set `replaceAll` to true to replace every occurrence.",
-    )
+  if (tools.includes("apply_patch")) {
+    instructions.push("- Use apply_patch to create, update, delete, or rename text files.")
   }
   return prompt.replace("${OPENCODE_TOOL_GUIDANCE}", instructions.join("\n"))
 }

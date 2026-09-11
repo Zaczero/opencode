@@ -49,7 +49,7 @@ Type safety ends at registration. The registry validates model input and declare
 
 ## Permissions
 
-The registry has no `Permission.Service` dependency and performs no execution authorization. Registration options may attach a permission action solely to preserve whole-tool definition filtering. Most registrations default to their effective name; `edit`, `write`, and `patch` use the shared `edit` action.
+The registry has no `Permission.Service` dependency and performs no execution authorization. Registration options may attach a permission action solely to preserve whole-tool definition filtering. Most registrations default to their effective name; `apply_patch` uses the shared `edit` action.
 
 Tool filtering is catalog visibility, not execution authorization. A call still executes the captured tool's leaf policy if it reaches execution.
 
@@ -58,6 +58,9 @@ Tool filtering is catalog visibility, not execution authorization. A call still 
 Built-ins return complete tool responses. `Tool.Snapshot.execute` is the local execution boundary. Generic output bounding is applied by the Session runner after execution.
 
 Producer capture remains local to producers. Shell stores combined process output in its backing file and returns a bounded tail with the full-output path when truncated.
+
+The built-in catalog exposes `apply_patch` as its sole file-editing tool for every model.
+Do not register the dormant `edit` and `write` plugins or select editing tools by model name.
 
 ## Current Gaps
 

@@ -128,10 +128,13 @@ export function parse(patchText: string): Result.Result<ReadonlyArray<Hunk>, Par
 export function derive(path: string, chunks: ReadonlyArray<UpdateFileChunk>, original: string): FileUpdate {
   const source = Bom.split(original)
   const lines = source.text.split("\n")
+  // The split's trailing "" is the final newline rather than a line, so drop it before matching
+  // and restore it unconditionally. Restoring it only for a non-empty last line would treat a
+  // file's own trailing blank line as the terminator and silently delete it.
   if (lines.at(-1) === "") lines.pop()
   const replacements = computeReplacements(lines, path, chunks)
   for (const [start, remove, insert] of replacements.reverse()) lines.splice(start, remove, ...insert)
-  if (lines.at(-1) !== "") lines.push("")
+  lines.push("")
   const next = Bom.split(lines.join("\n"))
   return { content: next.text, bom: source.bom || next.bom }
 }

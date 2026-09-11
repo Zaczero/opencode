@@ -5,6 +5,7 @@ import { ToolFailure } from "@opencode-ai/ai"
 import { Effect, Schema } from "effect"
 import { Form } from "../../form.js"
 import { Permission } from "../../permission.js"
+import type { SessionSchema } from "../../session/schema.js"
 import { Question } from "@opencode-ai/schema/question"
 
 export const name = "question"
@@ -45,11 +46,21 @@ export const toModelContent = (questions: ReadonlyArray<Question.Prompt>, answer
   return `User has answered your questions: ${formatted}. You can now continue with the user's answers in mind.`
 }
 
+/** The user talks to the root session; a subagent's open decision is an abort condition it reports upward. */
+export const CHILD_REFUSAL =
+  "Only the root session can ask the user. Report the decision you need to your parent instead of guessing."
+
 export const Plugin = {
   id: "opencode.tool.question",
   effect: Effect.fn("QuestionTool.Plugin")(function* (ctx: Context) {
     const forms = yield* Form.Service
     const permission = yield* Permission.Service
+    // Parentage is durable session state, so a child never sees the tool whatever its agent's permissions say.
+    const isRoot = (sessionID: SessionSchema.ID) =>
+      ctx.session.get({ sessionID }).pipe(
+        Effect.map((session) => session.parentID === undefined),
+        Effect.orElseSucceed(() => false),
+      )
 
     yield* ctx.tool
       .transform((editor) =>
@@ -60,55 +71,59 @@ export const Plugin = {
           input: Input,
           output: Output,
           execute: (input, context) =>
-            permission
-              .assert({
-                action: "question",
-                resources: ["*"],
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source: { type: "tool", messageID: context.messageID, id: context.id },
-              })
-              .pipe(
-                Effect.mapError((error) => new ToolFailure({ message: "Permission denied: question", error })),
-                Effect.andThen(
-                  forms
-                    .ask({
-                      sessionID: context.sessionID,
-                      title: "Questions",
-                      metadata: {
-                        kind: "question",
-                        tool: { messageID: context.messageID, id: context.id },
-                      },
-                      fields: [
-                        toField(input.questions[0], 0),
-                        ...input.questions.slice(1).map((question, index) => toField(question, index + 1)),
-                      ],
-                    })
-                    .pipe(Effect.orDie),
-                ),
-                Effect.flatMap((state) => {
-                  // Deliberate defect tunnel (see Permission.assert): a dismissal must dodge
-                  // leaf `mapError` blankets so it never becomes model-facing tool output; it
-                  // resurfaces as a typed failure at SessionModelRequest.executeTool.
-                  if (state.status === "cancelled") return Effect.die(new CancelledError())
-                  const output = {
-                    answers: input.questions.map((_, index): Question.Answer => {
-                      const value = state.answer[`q${index}`]
-                      if (value === undefined) return []
-                      if (typeof value === "object") return Array.from(value)
-                      return [String(value)]
-                    }),
-                  }
-                  return Effect.succeed({
-                    output,
-                    content: toModelContent(input.questions, output.answers),
-                    metadata: { answers: output.answers },
-                  })
+            Effect.gen(function* () {
+              if (!(yield* isRoot(context.sessionID))) return yield* new ToolFailure({ message: CHILD_REFUSAL })
+              yield* permission
+                .assert({
+                  action: "question",
+                  resources: ["*"],
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  source: { type: "tool", messageID: context.messageID, id: context.id },
+                })
+                .pipe(Effect.mapError((error) => new ToolFailure({ message: "Permission denied: question", error })))
+              const state = yield* forms
+                .ask({
+                  sessionID: context.sessionID,
+                  title: "Questions",
+                  metadata: {
+                    kind: "question",
+                    tool: { messageID: context.messageID, id: context.id },
+                  },
+                  fields: [
+                    toField(input.questions[0], 0),
+                    ...input.questions.slice(1).map((question, index) => toField(question, index + 1)),
+                  ],
+                })
+                .pipe(Effect.orDie)
+              // Deliberate defect tunnel (see Permission.assert): a dismissal must dodge
+              // leaf `mapError` blankets so it never becomes model-facing tool output; it
+              // resurfaces as a typed failure at SessionModelRequest.executeTool.
+              if (state.status === "cancelled") return yield* Effect.die(new CancelledError())
+              const output = {
+                answers: input.questions.map((_, index): Question.Answer => {
+                  const value = state.answer[`q${index}`]
+                  if (value === undefined) return []
+                  if (typeof value === "object") return Array.from(value)
+                  return [String(value)]
                 }),
-              ),
+              }
+              return {
+                output,
+                content: toModelContent(input.questions, output.answers),
+                metadata: { answers: output.answers },
+              }
+            }),
         }),
       )
       .pipe(Effect.orDie)
+
+    yield* ctx.session.hook("context", (event) =>
+      Effect.gen(function* () {
+        if (!event.tools[name]) return
+        if (!(yield* isRoot(event.sessionID))) delete event.tools[name]
+      }),
+    )
   }),
 }
 

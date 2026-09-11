@@ -15,6 +15,11 @@ import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "./lib/tool"
 
 const sessionID = Session.ID.make("ses_question_tool_test")
+const childID = Session.ID.make("ses_question_tool_child")
+const grandchildID = Session.ID.make("ses_question_tool_grandchild")
+const missingID = Session.ID.make("ses_question_tool_missing")
+/** Session hook callbacks the plugin registered, keyed by hook name. */
+const sessionHooks = new Map<string, (input: any) => Effect.Effect<void>>()
 const assertions: Permission.AssertInput[] = []
 let captured: Form.CreateInput | undefined
 let reject = false
@@ -60,7 +65,29 @@ const form = Layer.mock(Form.Service, {
 })
 const questionToolNode = makeLocationNode({
   name: "test/question-tool-plugin",
-  layer: Layer.effectDiscard(registerToolPlugin(QuestionTool.Plugin)),
+  layer: Layer.effectDiscard(
+    registerToolPlugin(QuestionTool.Plugin, {
+      session: {
+        // Parentage is the only session fact the tool reads.
+        get: (input) =>
+          input.sessionID === missingID
+            ? (Effect.fail(new Error("Session not found")) as never)
+            : Effect.succeed({
+                id: input.sessionID,
+                ...(input.sessionID === childID
+                  ? { parentID: sessionID }
+                  : input.sessionID === grandchildID
+                    ? { parentID: childID }
+                    : {}),
+              } as never),
+        hook: ((name: string, callback: (input: any) => Effect.Effect<void>) =>
+          Effect.sync(() => {
+            sessionHooks.set(name, callback)
+            return { dispose: Effect.void }
+          })) as never,
+      },
+    }),
+  ),
   deps: [Tool.node, Permission.node, Form.node],
 })
 
@@ -208,6 +235,39 @@ describe("QuestionTool", () => {
       })
     }),
   )
+
+  for (const target of [childID, grandchildID, missingID])
+    it.effect(`refuses ${target} before asking and drops the tool from its snapshot`, () =>
+      Effect.gen(function* () {
+        captured = undefined
+        deny = false
+        const before = assertions.length
+        const registry = yield* Tool.Service
+
+        expect(
+          yield* executeTool(registry, {
+            sessionID: target,
+            ...toolIdentity,
+            call: { type: "tool-call", id: "call-question-child", name: "question", input: questionInput },
+          }),
+        ).toEqual({
+          status: "error",
+          error: { type: "tool.execution", message: QuestionTool.CHILD_REFUSAL },
+        })
+        expect(capturedInput()).toBeUndefined()
+        expect(assertions).toHaveLength(before)
+
+        const context = sessionHooks.get("context")
+        if (!context) return yield* Effect.die("question plugin registered no context hook")
+        const tools = () => ({ question: { description: "", input: {} }, execute: { description: "", input: {} } })
+        const child = { sessionID: target, tools: tools() }
+        yield* context(child)
+        expect(Object.keys(child.tools)).toEqual(["execute"])
+        const root = { sessionID, tools: tools() }
+        yield* context(root)
+        expect(Object.keys(root.tools)).toEqual(["question", "execute"])
+      }),
+    )
 
   it.effect("does not invent tool ownership metadata without a durable registry source", () =>
     Effect.gen(function* () {

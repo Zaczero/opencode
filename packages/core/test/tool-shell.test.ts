@@ -51,6 +51,8 @@ import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions } from "
 const sessionID = Session.ID.make("ses_shell_tool_test")
 const sessionModel = Model.Ref.make({ id: Model.ID.make("test"), providerID: Provider.ID.make("test") })
 const assertions: Permission.AssertInput[] = []
+/** Sessions the stubbed execution was asked to wake. */
+const wakes: Session.ID[] = []
 let denyAction: string | undefined
 let afterPermission = (_input: Permission.AssertInput): Effect.Effect<void> => Effect.void
 
@@ -118,7 +120,7 @@ const executionNode = makeGlobalNode({
         active: Effect.succeed(new Set()),
         isActive: () => Effect.succeed(false),
         resume: complete,
-        wake: () => Effect.void,
+        wake: (id) => Effect.sync(() => void wakes.push(id)),
         interrupt: () => Effect.succeed(false),
         awaitIdle: (id) => complete(id).pipe(Effect.exit, Effect.asVoid),
       })
@@ -1533,6 +1535,39 @@ describe("ShellTool", () => {
                 truncated: false,
               },
             })
+          }),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+    ),
+  )
+
+  it.live("delivers a cancelled background command without waking its session", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withSession(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const bus = yield* Bus.Service
+            const admitted = yield* bus.subscribe(SessionEvent.InboxEnqueued).pipe(
+              Stream.filter((event) => event.data.sessionID === sessionID && event.data.item.type === "synthetic"),
+              Stream.runHead,
+              Effect.forkScoped({ startImmediately: true }),
+            )
+            const settled = yield* executeTool(registry, call({ command: idleCommand, background: true }))
+            const shellID = typeof settled.metadata?.shellID === "string" ? settled.metadata.shellID : undefined
+            if (!shellID) return yield* Effect.die("background command reported no shell id")
+            wakes.length = 0
+
+            const jobs = yield* Job.Service
+            yield* jobs.cancel(shellID)
+            expect((yield* Fiber.join(admitted)).valueOrUndefined?.data.item.payload).toMatchObject({
+              text: expect.stringContaining("Command cancelled"),
+              description: idleCommand,
+              metadata: { source: "shell", shellID, state: "cancelled" },
+            })
+            expect(wakes).toEqual([])
           }),
         )
       },

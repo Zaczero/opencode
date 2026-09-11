@@ -27,6 +27,34 @@ describe("Job", () => {
     }),
   )
 
+  it.live("notifies settlement listeners when a backgrounded subagent job is cancelled", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const settled: Job.Background[] = []
+      const unsubscribe = yield* jobs.onBackgroundSettled((background) => Effect.sync(() => void settled.push(background)))
+      const recovery = {
+        kind: "subagent" as const,
+        parentSessionID: SessionSchema.ID.make("ses_cancel_parent"),
+        childSessionID: SessionSchema.ID.make("ses_cancel_child"),
+        agent: "reviewer",
+        description: "review",
+      }
+      const job = yield* jobs.start({
+        id: recovery.childSessionID,
+        type: "subagent",
+        metadata: { sessionID: recovery.parentSessionID, childID: recovery.childSessionID },
+        recovery,
+        run: Effect.never,
+      })
+      const background = yield* jobs.background(job.id)
+      if (!background?.notificationID) throw new Error("Missing notification identity")
+      yield* jobs.cancel(job.id)
+      expect(settled).toMatchObject([{ id: job.id, status: "cancelled", notificationID: background.notificationID }])
+      yield* jobs.completeBackground(background.notificationID)
+      yield* unsubscribe
+    }),
+  )
+
   it.live("persists shell interruption before its completion observer acknowledges it", () =>
     Effect.gen(function* () {
       const jobs = yield* Job.Service

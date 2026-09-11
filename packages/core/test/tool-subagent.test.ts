@@ -47,6 +47,8 @@ const childModel = Model.Ref.make({ id: Model.ID.make("child"), providerID: Prov
 const parentModel = Model.Ref.make({ id: Model.ID.make("parent"), providerID: Provider.ID.make("test") })
 const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
 const activeSubagents = new Set<Session.ID>()
+/** Sessions the stubbed execution was asked to interrupt. */
+const interrupts: Session.ID[] = []
 
 const outputSessionID = (value: unknown) =>
   Schema.decodeUnknownSync(Schema.Struct({ sessionID: Session.ID }))(value).sessionID
@@ -97,7 +99,11 @@ const executionNode = makeGlobalNode({
         isActive: () => Effect.succeed(false),
         resume: complete,
         wake: () => Effect.void,
-        interrupt: () => Effect.succeed(false),
+        interrupt: (sessionID) =>
+          Effect.sync(() => {
+            interrupts.push(sessionID)
+            return activeSubagents.has(sessionID)
+          }),
         awaitIdle: (sessionID) => complete(sessionID).pipe(Effect.exit, Effect.asVoid),
       })
     }),
@@ -280,8 +286,11 @@ describe("SubagentTool", () => {
           expect(properties?.directory?.description).toContain("Ignored when continuing a child")
           const output = definitions.find((tool) => tool.name === "subagent_output")
           const list = definitions.find((tool) => tool.name === "subagent_list")
+          const interrupt = definitions.find((tool) => tool.name === "subagent_interrupt")
           expect(output?.description).toContain("latest completed response after context loss")
           expect(list?.description).toContain("Recover child session IDs after context loss")
+          expect(interrupt?.description).toContain("without a model round-trip")
+          expect(definition?.description).toContain("subagent_interrupt")
           expect(
             yield* executeTool(registry, {
               sessionID: parent.id,
@@ -428,7 +437,8 @@ describe("SubagentTool", () => {
           })
           const prompt = (yield* sessions.inbox(child.id)).find((message) => message.type === "user")?.payload.text
           expect(prompt).toContain("You are a subagent spawned by another session.\n\nreview this")
-          expect(prompt).toContain("ABORT CONDITION:")
+          expect(prompt).toContain("Stop and report if the task's premise is false")
+          expect(prompt).toContain("Report user questions to your parent")
 
           const fallback = yield* executeTool(registry, {
             sessionID: parent.id,
@@ -618,6 +628,66 @@ describe("SubagentTool", () => {
           )
           expect((yield* jobs.get(child.id))?.status).toBe("running")
           yield* jobs.cancel(child.id)
+        }),
+      ),
+    ),
+  )
+
+  it.live("interrupts a direct child natively and cancels the shells it launched", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
+          const sessions = yield* Session.Service
+          const parent = yield* sessions.create({ location, model: parentModel })
+          const other = yield* sessions.create({ location, model: parentModel })
+          const child = yield* sessions.create({
+            parentID: parent.id,
+            title: "review",
+            agent: Agent.ID.make("reviewer"),
+            model: childModel,
+          })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const jobs = yield* Job.Service
+          const shell = yield* jobs.start({
+            type: "shell",
+            title: "sleep 100",
+            metadata: { sessionID: child.id, shellID: "sh_child" },
+            run: Effect.never,
+          })
+          activeSubagents.add(child.id)
+          interrupts.length = 0
+          const call = (sessionID: Session.ID, id: string) =>
+            executeTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: { type: "tool-call", id, name: "subagent_interrupt", input: { sessionID: child.id } },
+            })
+
+          const text = (result: { output?: unknown }) =>
+            String((result.output as { output?: string } | undefined)?.output ?? "")
+
+          const stopped = yield* call(parent.id, "call-interrupt")
+          expect(stopped.status).toBe("completed")
+          expect(text(stopped)).toContain("Interrupted; its turn has stopped.")
+          expect(text(stopped)).toContain("Cancelled 1 background shell it launched: sleep 100")
+          expect(text(stopped)).toContain(`Continue it with subagent sessionID=${child.id}`)
+          expect(interrupts).toEqual([child.id])
+          expect((yield* jobs.get(shell.id))?.status).toBe("cancelled")
+
+          activeSubagents.delete(child.id)
+          const idle = yield* call(parent.id, "call-interrupt-idle")
+          expect(text(idle)).toContain("Not running; nothing to interrupt.")
+          expect(text(idle)).not.toContain("Cancelled")
+
+          const refused = yield* call(other.id, "call-interrupt-unrelated")
+          expect(text(refused)).toBe(`Cannot interrupt subagent ${child.id}: it was not launched from this session.`)
+          expect(interrupts).toEqual([child.id, child.id])
         }),
       ),
     ),

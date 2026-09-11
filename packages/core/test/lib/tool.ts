@@ -67,6 +67,7 @@ export const registerToolPlugin = <R>(
       ...overrides,
       session: {
         hook: () => Effect.succeed({ dispose: Effect.void }),
+        ...overrides.session,
       },
       tool: {
         transform: tools.transform,

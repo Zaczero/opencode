@@ -286,6 +286,16 @@ describe("Patch", () => {
     expect(Patch.derive("no-newline.txt", [{ oldLines: ["old"], newLines: ["new"] }], "old").content).toBe("new\n")
   })
 
+  test("keeps a trailing blank line the patch leaves in place", () => {
+    expect(Patch.derive("blank.txt", [{ oldLines: ["a"], newLines: ["A"] }], "a\n\n").content).toBe("A\n\n")
+    expect(Patch.derive("blank.txt", [{ oldLines: [], newLines: ["x"] }], "a\n\n").content).toBe("a\n\nx\n")
+    expect(Patch.derive("blank.txt", [{ oldLines: [], newLines: ["x"] }], "\n").content).toBe("\nx\n")
+  })
+
+  test("keeps a trailing blank line the patch adds", () => {
+    expect(Patch.derive("blank.txt", [{ oldLines: ["a"], newLines: ["a", ""] }], "a\n").content).toBe("a\n\n")
+  })
+
   test("disambiguates updates with change context", () => {
     expect(
       Patch.derive(

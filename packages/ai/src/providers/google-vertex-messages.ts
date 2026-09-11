@@ -60,7 +60,7 @@ const route = Route.make({
   transport: AnthropicMessages.transport<
     Omit<AnthropicMessages.AnthropicMessagesBody, "model"> & { readonly anthropic_version: typeof VERSION }
   >(),
-  headers: () => ({ "anthropic-version": HEADER_VERSION }),
+  defaults: { headers: { "anthropic-version": HEADER_VERSION } },
 })
 
 export const routes = [route]

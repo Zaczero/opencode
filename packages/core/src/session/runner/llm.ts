@@ -129,7 +129,7 @@ const layer = Layer.effect(
                             db,
                             session.id,
                             selected.instructions,
-                            SessionProviderContext.provenance(model) ?? "local",
+                            yield* SessionProviderContext.boundary(model, hooks),
                           )
                           return {
                             session: selected.session,

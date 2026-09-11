@@ -56,7 +56,7 @@ describe("MiniMax provider", () => {
       expect(Endpoint.render(model.route.endpoint, { request, body: compiled.body }).toString()).toBe(
         "https://gateway.example/anthropic/v1/messages",
       )
-      expect(model.route.headers?.({ request })).toEqual({ "anthropic-version": "2023-06-01" })
+      expect(model.route.defaults.headers).toEqual({ "anthropic-version": "2023-06-01" })
       const headers = yield* model.route.auth.apply({
         request,
         method: "POST",

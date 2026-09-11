@@ -1,6 +1,7 @@
 import type { SessionApi } from "@opencode/client/effect/api"
 import type { GenerationOptionsFields, Message, SystemPart } from "@opencode/ai"
 import type { Agent } from "@opencode/schema/agent"
+import type { Credential } from "@opencode/schema/credential"
 import type { Model } from "@opencode/schema/model"
 import type { PromptInput } from "@opencode/schema/prompt-input"
 import type { Session } from "@opencode/schema/session"
@@ -65,6 +66,8 @@ export interface SessionModelRequest {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  /** The credential used to construct this request, rather than the currently selected account. */
+  readonly credential?: Credential.Value
   baseURL?: string
   headers: Record<string, string>
 }

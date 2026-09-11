@@ -161,6 +161,7 @@ const setup = Effect.fnUntraced(function* (options: { endpoint?: boolean; plugin
         })
       : native,
     {
+      account: { identity: "native-fixture-account" },
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
       cost: [],
       limit: { context: 200_000, output: 32_000 },
@@ -191,11 +192,8 @@ const setup = Effect.fnUntraced(function* (options: { endpoint?: boolean; plugin
   if (options.plugin !== false) yield* NativeCompactionPlugin.Plugin.effect(host())
   yield* hooks.register("session", "model.request", (event) =>
     Effect.sync(() => {
-      event.headers["x-test-hook"] = event.kind
+      event.headers["x-session-id"] = event.kind
     }),
-  )
-  yield* hooks.register("session", "http.request", (event) =>
-    Effect.sync(() => event.request.headers.set("x-http-hook", event.kind)),
   )
   const prompt = Effect.fnUntraced(function* (text: string, synthetic = false) {
     const id = SessionMessage.ID.create()
@@ -211,7 +209,7 @@ const setup = Effect.fnUntraced(function* (options: { endpoint?: boolean; plugin
       db,
       sessionID,
       instructions,
-      SessionProviderContext.provenance(model) ?? "local",
+      yield* SessionProviderContext.boundary(model, hooks),
     )
     return {
       session,
@@ -285,8 +283,7 @@ it.live(
         tools: [expect.objectContaining({ name: "read" })],
       })
       expect(fixture.bodies[0]).not.toHaveProperty("context_management")
-      expect(fixture.headers[0]?.get("x-test-hook")).toBe("compaction")
-      expect(fixture.headers[0]?.get("x-http-hook")).toBe("compaction")
+      expect(fixture.headers[0]?.get("x-session-id")).toBe("compaction")
       yield* fixture.prompt("Second real user request")
       const context = yield* fixture.load
       const prepared = yield* fixture.requests.primary({
@@ -361,7 +358,7 @@ it.live("manual and automatic endpoint compaction keep the provider replacement 
     expect(replacement[0]?.content).toEqual([Message.text("endpoint retained")])
     expect(JSON.stringify(replacement)).not.toContain("Original user")
     expect(fixture.state.calls).toBe(2)
-    expect(fixture.headers[0]?.get("x-http-hook")).toBe("compaction")
+    expect(fixture.headers[0]?.get("x-session-id")).toBe("compaction")
     expect(fixture.bodies[0]).not.toHaveProperty("context_management")
   }),
 )
@@ -432,6 +429,35 @@ it.live("compaction hooks supply the summary instead of provider compaction", ()
     })
   }),
 )
+
+for (const hook of ["http.request", "experimental.ws.handshake", "experimental.ws.send"] as const)
+  it.live(`re-expands history and rejects native compaction with a late ${hook} hook`, () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup()
+      yield* fixture.prompt("Original account-bound request")
+      expect(yield* fixture.compact).toEqual({ status: "completed" })
+      yield* fixture.prompt("Continue after checkpoint")
+      yield* fixture.hooks.register("session", hook, () => Effect.void)
+      const context = yield* fixture.load
+      expect(context.messages.some(SessionProviderContext.isCheckpoint)).toBe(false)
+      expect(context.messages).toContainEqual(expect.objectContaining({ text: "Original account-bound request" }))
+      const prepared = yield* fixture.requests.primary({
+        session: context.session,
+        agent: context.agent.id,
+        model: context.model,
+        tools: context.tools,
+        ...SessionModelRequest.baseTranscript({ ...context, agent: context.agent.info }),
+      })
+      expect(prepared.account).toBeUndefined()
+      expect(prepared.request.promptCacheKey).toBeUndefined()
+      expect(JSON.stringify(prepared.request.messages)).not.toContain("encrypted_1")
+      expect(yield* fixture.compact).toMatchObject({
+        status: "failed",
+        error: { type: "provider.unsupported-operation" },
+      })
+      expect(fixture.state.calls).toBe(1)
+    }),
+  )
 
 it.live("rejects request-hook route rewrites before provider compaction", () =>
   Effect.gen(function* () {

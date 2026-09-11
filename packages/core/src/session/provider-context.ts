@@ -2,11 +2,12 @@ export * as SessionProviderContext from "./provider-context.js"
 
 import { Message } from "@opencode/ai"
 import { SessionProviderContext } from "@opencode/schema/session-provider-context"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { Hash } from "@opencode/util/hash"
 import type { SessionMessage } from "./message.js"
 import type { SessionRunnerModel } from "./runner/model.js"
+import type { PluginHooks } from "../plugin/hooks.js"
 
 export type Provenance = SessionProviderContext.Provenance
 export const Info = SessionProviderContext.Info
@@ -15,16 +16,19 @@ export type Info = SessionProviderContext.Info
 const messages = Schema.toCodecJson(Schema.Array(Message))
 
 /** No guessed endpoints. Dynamic URL builders cannot establish a durable deployment identity here. */
-export function provenance(resolved: Pick<SessionRunnerModel.Resolved, "model" | "ref">): Provenance | undefined {
+export function provenance(
+  resolved: Pick<SessionRunnerModel.Resolved, "model" | "ref" | "account">,
+): Provenance | undefined {
   const model = resolved.model
   const endpoint = model.route.endpoint
-  if (!endpoint.baseURL || typeof endpoint.path !== "string") return undefined
+  if (!endpoint.baseURL || typeof endpoint.path !== "string" || !resolved.account?.scope) return undefined
   return {
     providerID: resolved.ref.providerID,
     provider: model.provider,
     modelID: model.id,
     route: model.route.id,
     protocol: model.route.protocol,
+    account: resolved.account.scope,
     endpoint: Hash.sha256(
       JSON.stringify([
         endpoint.baseURL,
@@ -34,6 +38,15 @@ export function provenance(resolved: Pick<SessionRunnerModel.Resolved, "model" |
     ),
   }
 }
+
+export const boundary = Effect.fnUntraced(function* (
+  resolved: SessionRunnerModel.Resolved,
+  hooks: PluginHooks.Interface,
+) {
+  for (const name of ["http.request", "experimental.ws.handshake", "experimental.ws.send"] as const)
+    if (yield* hooks.has("session", name, resolved.ref.providerID)) return "local" as const
+  return provenance(resolved) ?? "local"
+})
 
 export const compatible = (source: Provenance, target: Provenance | undefined) =>
   target !== undefined && isDeepStrictEqual(source, target)

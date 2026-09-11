@@ -44,7 +44,7 @@ const messagesRoute = Route.make({
   protocol: ZAIMessages.protocol,
   endpoint: Endpoint.path("/messages", { baseURL: "https://api.z.ai/api/anthropic/v1" }),
   framing: AnthropicMessages.framing,
-  headers: () => ({ "anthropic-version": "2023-06-01" }),
+  defaults: { headers: { "anthropic-version": "2023-06-01" } },
 })
 const responsesRoute = Route.make({
   id: "zai-coding-responses",

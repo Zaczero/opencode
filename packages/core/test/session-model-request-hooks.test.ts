@@ -40,6 +40,34 @@ const transport = SessionModelTransport.Service.of({
 })
 
 describe("SessionModelRequest HTTP hooks", () => {
+  it.effect("does not add an auth-changing hook to an already prepared response-only exchange", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "http.response", () => Effect.void)
+      const requests = yield* SessionModelRequest.Service.pipe(Effect.provide(SessionModelRequest.layer))
+      const prepared = yield* requests.primary({
+        session,
+        agent: Agent.ID.make("build"),
+        model,
+        system: [],
+        messages: [],
+      })
+      yield* hooks.register("session", "http.request", (event) =>
+        Effect.sync(() => event.request.headers.set("authorization", "Bearer B")),
+      )
+      if (!prepared.options.http) throw new Error("Expected response middleware")
+      yield* prepared.options.http(
+        HttpClientRequest.post("https://example.test/v1/chat/completions").pipe(
+          HttpClientRequest.setHeader("authorization", "Bearer A"),
+        ),
+        (sent) => {
+          expect(sent.headers.authorization).toBe("Bearer A")
+          return Effect.succeed(HttpClientResponse.fromWeb(sent, new Response("{}")))
+        },
+      )
+    }).pipe(Effect.provideService(SessionModelTransport.Service, transport)),
+  )
+
   it.effect("tags every Session request kind on http.request and http.response", () =>
     Effect.gen(function* () {
       const hooks = yield* PluginHooks.Service

@@ -30,6 +30,7 @@ import { testEffect } from "./lib/effect"
 const model = SessionRunnerModel.resolved(
   LanguageModel.make({ id: "deployment", provider: "openai", route: OpenAIResponses.route }),
   {
+    account: { identity: "native-context-account" },
     capabilities: { tools: true, input: ["text"], output: ["text"] },
     cost: [],
     limit: { context: 128_000, output: 4096 },
@@ -90,8 +91,10 @@ const setup = Effect.gen(function* () {
       recent: "",
       providerContext: context,
     })
+  const cache = SessionHistory.makeCache()
+  yield* Effect.addFinalizer(() => Effect.sync(cache.close))
   const load = (boundary: SessionHistory.Boundary) =>
-    SessionHistory.entriesForRunner(database.db, sessionID, instructions, boundary)
+    SessionHistory.entriesForRunner(database.db, sessionID, instructions, boundary, cache)
   return { db: database.db, bus, state, instructions, prepare, prompt, compact, load }
 })
 
@@ -139,6 +142,8 @@ test("compatibility uses the actual deployment and endpoint rather than a catalo
     ),
   ).toBe(true)
   for (const changed of [
+    { ...model, account: undefined },
+    { ...model, account: { identity: "other", scope: "another-account" } },
     { ...model, model: LanguageModel.update(model.model, { id: "other-deployment" }) },
     {
       ...model,
@@ -169,92 +174,92 @@ test("compatibility uses the actual deployment and endpoint rather than a catalo
   expect(SessionProviderContext.compatible(providerContext.provenance, undefined)).toBe(false)
 })
 
-it.effect(
-  "advances the native instruction epoch and omits superseded chronological updates after durable replay and provider switches",
-  () =>
-    Effect.gen(function* () {
-      const s = yield* setup
-      yield* s.prepare
-      yield* s.prompt("original request")
-      s.state.value = "changed instructions"
-      yield* s.prepare
-      yield* s.bus.publish(SessionEvent.Compaction.Started, { sessionID, reason: "manual", recent: "" })
-      const completed = yield* s.compact(providerContext)
-      s.state.value = "newest instructions"
-      yield* s.prepare
-      yield* s.prompt("continue")
+it.effect("preserves native instruction epochs across cached history, account switches, and durable replay", () =>
+  Effect.gen(function* () {
+    const s = yield* setup
+    yield* s.prepare
+    yield* s.prompt("original request")
+    s.state.value = "changed instructions"
+    yield* s.prepare
+    yield* s.bus.publish(SessionEvent.Compaction.Started, { sessionID, reason: "manual", recent: "" })
+    const completed = yield* s.compact(providerContext)
+    s.state.value = "newest instructions"
+    yield* s.prepare
+    yield* s.prompt("continue")
 
-      const verify = Effect.gen(function* () {
-        expect(
-          yield* s.db.select().from(InstructionStateTable).where(eq(InstructionStateTable.session_id, sessionID)).get(),
-        ).toMatchObject({
-          epoch_start: completed.durable.seq,
-          initial_values: { "test/context": Instructions.hash("changed instructions") },
-          current_values: { "test/context": Instructions.hash("newest instructions") },
-        })
-        const native = yield* s.load(target)
-        expect(native.initial).toBe("changed instructions")
+    const verify = Effect.gen(function* () {
+      expect(
+        yield* s.db.select().from(InstructionStateTable).where(eq(InstructionStateTable.session_id, sessionID)).get(),
+      ).toMatchObject({
+        epoch_start: completed.durable.seq,
+        initial_values: { "test/context": Instructions.hash("changed instructions") },
+        current_values: { "test/context": Instructions.hash("newest instructions") },
+      })
+      const native = yield* s.load(target)
+      expect(native.initial).toBe("changed instructions")
+      expect(
+        toLLMMessages(
+          native.entries.map((entry) => entry.message),
+          model.ref,
+        ),
+      ).toEqual([
+        ...replacement,
+        Message.system("newest instructions"),
+        expect.objectContaining({ role: "user", content: [Message.text("continue")] }),
+      ])
+      for (const incompatible of [
+        "local" as const,
+        { ...providerContext.provenance, modelID: "other" },
+        { ...providerContext.provenance, provider: "other" },
+        { ...providerContext.provenance, account: "another-account" },
+      ]) {
+        const expanded = yield* s.load(incompatible)
+        expect(expanded.initial).toBe("changed instructions")
         expect(
           toLLMMessages(
-            native.entries.map((entry) => entry.message),
+            expanded.entries.map((entry) => entry.message),
             model.ref,
-          ),
+          ).map((message) => message.content),
         ).toEqual([
-          ...replacement,
-          Message.system("newest instructions"),
-          expect.objectContaining({ role: "user", content: [Message.text("continue")] }),
+          [Message.text("original request")],
+          [Message.text("newest instructions")],
+          [Message.text("continue")],
         ])
-        for (const incompatible of [
-          "local" as const,
-          { ...providerContext.provenance, modelID: "other" },
-          { ...providerContext.provenance, provider: "other" },
-        ]) {
-          const expanded = yield* s.load(incompatible)
-          expect(expanded.initial).toBe("changed instructions")
-          expect(
-            toLLMMessages(
-              expanded.entries.map((entry) => entry.message),
-              model.ref,
-            ).map((message) => message.content),
-          ).toEqual([
-            [Message.text("original request")],
-            [Message.text("newest instructions")],
-            [Message.text("continue")],
-          ])
-        }
-        const preview = yield* SessionHistory.preview(s.db, sessionID, s.instructions, target)
-        expect(preview.initial).toBe("changed instructions")
-        expect(preview.messages).toEqual(native.entries.map((entry) => entry.message))
-        const store = yield* SessionStore.Service
-        expect((yield* store.messages({ sessionID })).map((message) => message.type)).toEqual([
-          "user",
-          "system",
-          "compaction",
-          "system",
-          "user",
-        ])
+      }
+      expect((yield* s.load(target)).entries).toEqual(native.entries)
+      const preview = yield* SessionHistory.preview(s.db, sessionID, s.instructions, target)
+      expect(preview.initial).toBe("changed instructions")
+      expect(preview.messages).toEqual(native.entries.map((entry) => entry.message))
+      const store = yield* SessionStore.Service
+      expect((yield* store.messages({ sessionID })).map((message) => message.type)).toEqual([
+        "user",
+        "system",
+        "compaction",
+        "system",
+        "user",
+      ])
+    })
+    yield* verify
+    const recorded = yield* s.db
+      .select()
+      .from(EventTable)
+      .where(eq(EventTable.aggregate_id, sessionID))
+      .orderBy(asc(EventTable.seq))
+      .all()
+    expect(recorded.filter((event) => event.data.providerContext !== undefined)).toHaveLength(1)
+    yield* s.bus.remove(sessionID)
+    yield* s.db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
+    for (const event of recorded)
+      yield* s.bus.replay({
+        id: event.id,
+        created: event.created,
+        aggregateID: event.aggregate_id,
+        seq: event.seq,
+        type: event.type,
+        data: event.data,
       })
-      yield* verify
-      const recorded = yield* s.db
-        .select()
-        .from(EventTable)
-        .where(eq(EventTable.aggregate_id, sessionID))
-        .orderBy(asc(EventTable.seq))
-        .all()
-      expect(recorded.filter((event) => event.data.providerContext !== undefined)).toHaveLength(1)
-      yield* s.bus.remove(sessionID)
-      yield* s.db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
-      for (const event of recorded)
-        yield* s.bus.replay({
-          id: event.id,
-          created: event.created,
-          aggregateID: event.aggregate_id,
-          seq: event.seq,
-          type: event.type,
-          data: event.data,
-        })
-      yield* verify
-    }),
+    yield* verify
+  }),
 )
 
 it.effect("falls back to an earlier compatible native or local checkpoint", () =>
@@ -299,5 +304,20 @@ it.effect("rejects malformed persisted native windows instead of silently droppi
     })
     const store = yield* SessionStore.Service
     expect(yield* store.context(sessionID).pipe(Effect.flip)).toMatchObject({ _tag: "Session.MessageDecodeError" })
+  }),
+)
+
+it.effect("re-expands checkpoints written without account provenance", () =>
+  Effect.gen(function* () {
+    const s = yield* setup
+    yield* s.prepare
+    yield* s.prompt("Readable history before account provenance existed")
+    yield* s.compact({
+      ...providerContext,
+      provenance: { ...providerContext.provenance, account: undefined },
+    })
+    const history = yield* s.load(target)
+    expect(history.entries.map((entry) => entry.message.type)).toEqual(["user"])
+    expect(history.entries[0].message).toMatchObject({ text: "Readable history before account provenance existed" })
   }),
 )

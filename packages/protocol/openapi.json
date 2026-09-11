@@ -17289,6 +17289,9 @@
           "model": {
             "$ref": "#/components/schemas/Model.Ref"
           },
+          "account": {
+            "type": "string"
+          },
           "content": {
             "type": "array",
             "items": {
@@ -17518,6 +17521,9 @@
           },
           "model": {
             "$ref": "#/components/schemas/Model.Ref"
+          },
+          "account": {
+            "type": "string"
           },
           "providerState": {
             "$ref": "#/components/schemas/Session.Message.ProviderState_5"

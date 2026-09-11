@@ -25,6 +25,8 @@ import type { Content } from "@opencode/schema/tool"
 import { Cause, Context, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
+import { Hash } from "@opencode/util/hash"
+import { ModelAccount } from "../model-account.js"
 import { App } from "../app.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "../plugin/hooks.js"
@@ -50,6 +52,7 @@ export type ExecuteError = Tool.Error | Permission.DeclinedError | QuestionTool.
 export interface Prepared<Event = SessionRequest> {
   readonly event: Event
   readonly request: LLMRequest
+  readonly account?: string
   readonly options: StreamOptions
   readonly retry: (event: PluginHooks.Domains["session"]["retry"]) => Effect.Effect<void>
   /** Runs a tool call against the tools this request advertised. */
@@ -88,7 +91,7 @@ export const baseTranscript = (input: {
     ]
       .filter((part) => part.length > 0)
       .map(SystemPart.make),
-    messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey),
+    messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey, input.model.account?.scope),
   }
 }
 
@@ -207,7 +210,7 @@ export const layer = Layer.effect(
     >(kind: SessionRequestKind, input: Input, shape: (draft: SessionRequest, tools: Definitions) => Effect.Effect<S>) {
       const session = input.session
       const model = input.model
-      const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind }
+      const scope = { sessionID: session.id, agent: input.agent, model: model.ref, kind, credential: model.credential }
       const tools = input.tools ?? {
         definitions: [],
         execute: () => new Tool.Error({ message: "Tools are not available for this request" }),
@@ -258,8 +261,6 @@ export const layer = Layer.effect(
             "x-opencode-client": app.name,
           },
         },
-        // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
-        promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         system: shaped.system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities)),
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
@@ -278,13 +279,35 @@ export const layer = Layer.effect(
         modelHook.baseURL !== undefined && modelHook.baseURL !== baseURL
           ? base.model.route.with({ endpoint: { baseURL: modelHook.baseURL } })
           : base.model.route
-      const request = LLMRequest.update(base, {
+      const hookedRequest = LLMRequest.update(base, {
         model: route === base.model.route ? base.model : LanguageModel.update(base.model, { route }),
         http: new HttpOptions({
           body: base.http?.body,
           headers: Object.keys(modelHook.headers).length === 0 ? undefined : modelHook.headers,
           query: base.http?.query,
         }),
+      })
+      const hasHttpRequestHooks = yield* hooks.has("session", "http.request", model.ref.providerID)
+      const hasHandshakeHooks = yield* hooks.has("session", "experimental.ws.handshake", model.ref.providerID)
+      const hasSendHooks = yield* hooks.has("session", "experimental.ws.send", model.ref.providerID)
+      // Late request hooks can change account identity after history selection.
+      const account =
+        hasHttpRequestHooks || hasHandshakeHooks || hasSendHooks
+          ? undefined
+          : ModelAccount.scope(model.account?.identity, hookedRequest.model, hookedRequest.http?.headers)
+      const request = LLMRequest.update(hookedRequest, {
+        promptCacheKey: account === undefined ? undefined : Hash.sha256(JSON.stringify([affinity, account])),
+        messages:
+          account !== undefined && account === model.account?.scope
+            ? hookedRequest.messages
+            : hookedRequest.messages.map((message) =>
+                Message.make({
+                  ...message,
+                  content: message.content
+                    .filter((part) => part.type !== "reasoning" || part.text.length > 0)
+                    .map((part) => ({ ...part, providerMetadata: undefined })),
+                }),
+              ),
       })
       // History selects native windows against the catalog route before hooks run. A newly installed
       // routing hook must not send an existing opaque window to another deployment; `prepare` has no
@@ -294,7 +317,11 @@ export const layer = Layer.effect(
         selected &&
         !SessionProviderContext.compatible(
           selected,
-          SessionProviderContext.provenance({ model: request.model, ref: model.ref }),
+          SessionProviderContext.provenance({
+            ...model,
+            model: request.model,
+            account: model.account ? { ...model.account, scope: account } : undefined,
+          }),
         ) &&
         request.messages.some((message) => message.content.some((part) => part.type === "compaction"))
       )
@@ -302,16 +329,15 @@ export const layer = Layer.effect(
           new Error("Provider context is incompatible with the route selected by model request hooks"),
         )
 
-      const hasHttpHooks =
-        (yield* hooks.has("session", "http.request", model.ref.providerID)) ||
-        (yield* hooks.has("session", "http.response", model.ref.providerID))
+      const hasHttpHooks = hasHttpRequestHooks || (yield* hooks.has("session", "http.response", model.ref.providerID))
       const http: StreamOptions["http"] = hasHttpHooks
         ? (req, handler) =>
             Effect.gen(function* () {
-              const before = yield* hooks.trigger("session", "http.request", {
+              const event = {
                 ...scope,
                 request: yield* HttpClientRequest.toWeb(req),
-              })
+              }
+              const before = hasHttpRequestHooks ? yield* hooks.trigger("session", "http.request", event) : event
               let sent = HttpClientRequest.fromWeb(before.request)
               if (before.request.body)
                 sent = HttpClientRequest.bodyUint8Array(
@@ -337,17 +363,21 @@ export const layer = Layer.effect(
         input.webSocket === "session" && model.transport === "websocket"
           ? transport.bind(session.id, {
               handshake: (connect) =>
-                hooks
-                  .trigger("session", "experimental.ws.handshake", {
-                    ...scope,
-                    url: connect.url,
-                    headers: connect.headers,
-                  })
-                  .pipe(Effect.map((event) => ({ url: event.url, headers: event.headers }))),
+                hasHandshakeHooks
+                  ? hooks
+                      .trigger("session", "experimental.ws.handshake", {
+                        ...scope,
+                        url: connect.url,
+                        headers: connect.headers,
+                      })
+                      .pipe(Effect.map((event) => ({ url: event.url, headers: event.headers })))
+                  : Effect.succeed(connect),
               send: (frame) =>
-                hooks
-                  .trigger("session", "experimental.ws.send", { ...scope, frame })
-                  .pipe(Effect.map((event) => event.frame)),
+                hasSendHooks
+                  ? hooks
+                      .trigger("session", "experimental.ws.send", { ...scope, frame })
+                      .pipe(Effect.map((event) => event.frame))
+                  : Effect.succeed(frame),
               receive: (frame) =>
                 hooks
                   .trigger("session", "experimental.ws.receive", { ...scope, frame })
@@ -358,6 +388,7 @@ export const layer = Layer.effect(
       return {
         event: shaped,
         request,
+        account,
         options: { ...(http ? { http } : {}), ...(webSocket ? { webSocket } : {}) },
         retry: (event: Parameters<Prepared["retry"]>[0]) =>
           hooks.trigger("session", "retry", event).pipe(Effect.asVoid),

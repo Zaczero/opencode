@@ -76,6 +76,7 @@ export const make = Effect.gen(function* () {
       assistantMessageID: input.assistantMessageID,
       agent: input.agent,
       model: input.model.ref,
+      account: input.prepared.account,
       providerMetadataKey: input.model.model.route.providerMetadataKey ?? input.model.model.provider,
       snapshot: startSnapshot,
       started: yield* Clock.currentTimeMillis,

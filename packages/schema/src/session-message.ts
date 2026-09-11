@@ -214,6 +214,8 @@ export const Assistant = Schema.Struct({
   type: Schema.tag("assistant"),
   agent: Agent.ID,
   model: Model.Ref,
+  /** Opaque account scope that produced provider-bound content. Missing provenance is not reusable. */
+  account: Schema.String.pipe(optional),
   content: AssistantContent.pipe(Schema.Array),
   snapshot: Schema.Struct({
     start: Snapshot.ID.pipe(optional),
@@ -258,6 +260,7 @@ export const CompactionCompleted = Schema.Struct({
   status: Schema.tag("completed"),
   reason: Schema.Literals(["auto", "manual"]),
   model: Model.Ref.pipe(optional),
+  account: Schema.String.pipe(optional),
   providerState: ProviderState.pipe(optional),
   summary: Schema.String,
   recent: Schema.String,

@@ -5,6 +5,7 @@ import { Effect } from "effect"
 import { Database } from "../database/database.js"
 import { Instance } from "../instance/service.js"
 import { Plugin } from "../plugin/service.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import type { Instructions } from "../instructions/index.js"
 import { SessionContext } from "./context.js"
 import type { AgentNotFoundError } from "./error.js"
@@ -28,13 +29,14 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input: 
   return yield* Effect.gen(function* () {
     yield* Plugin.awaitActivation
     const context = yield* SessionContext.Service
+    const hooks = yield* PluginHooks.Service
     const selection = yield* context.select(input.session.id)
     const model = yield* context.resolveModel(selection.session)
     const history = yield* SessionHistory.preview(
       database.db,
       selection.session.id,
       selection.instructions,
-      SessionProviderContext.provenance(model) ?? "local",
+      yield* SessionProviderContext.boundary(model, hooks),
     )
     const transcript = SessionModelRequest.baseTranscript({
       agent: selection.agent.info,

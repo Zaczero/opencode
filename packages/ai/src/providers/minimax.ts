@@ -81,7 +81,7 @@ const messagesRoute = Route.make({
   protocol: AnthropicMessages.protocol,
   endpoint: Endpoint.path("/messages", { baseURL: "https://api.minimax.io/anthropic/v1" }),
   framing: AnthropicMessages.framing,
-  headers: () => ({ "anthropic-version": "2023-06-01" }),
+  defaults: { headers: { "anthropic-version": "2023-06-01" } },
 })
 
 const chatRoute = Route.make({

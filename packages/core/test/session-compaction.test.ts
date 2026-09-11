@@ -74,6 +74,7 @@ const client = Layer.mock(LLMClient.Service)({
   generate: () => Effect.die("unused"),
 })
 const resolved = SessionRunnerModel.resolved(model, {
+  account: { identity: "compaction-account" },
   capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
   cost,
   limit: { context: 200_000, output: 32_000 },
@@ -242,6 +243,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
     })
     const input = (tokens: number, limit: { context: number; input?: number; output: number }) => {
       const resolved = SessionRunnerModel.resolved(model, {
+        account: { identity: "compaction-account" },
         capabilities: { tools: true, input: ["text", "image", "pdf"], output: ["text"] },
         cost: [],
         limit,
@@ -255,6 +257,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
           content: [{ type: "text", text: "Done" }],
           tokens: { input: tokens, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
           time: { created: 0, completed: 0 },
+          account: resolved.account?.scope,
         }),
       ]
       return {
@@ -310,6 +313,10 @@ it.effect("auto compaction estimates current content against the buffered prompt
     const grown = { ...input(79_000, contextLimited), messages: [{ ...assistant, content: [tool] }] }
     expect(SessionCompaction.estimateTokens(grown)).toBe(80_000)
     expect(compaction.required(grown)).toBe(true)
+    // After an account switch the old usage counted provider state that is no longer sent: estimate from text.
+    const switched = { ...grown, resolved: { ...grown.resolved, account: { identity: "other", scope: "other" } } }
+    expect(SessionCompaction.estimateTokens(switched)).toBe(1_022)
+    expect(compaction.required(switched)).toBe(false)
 
     const interrupted = { ...assistant, id: SessionMessage.ID.create(), tokens: undefined }
     expect(SessionCompaction.estimateTokens({ ...grown, messages: [...grown.messages, interrupted] })).toBe(80_001)
@@ -473,7 +480,7 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
     ])
 
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.promptCacheKey).toBe(parentID)
+    expect(requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
     expect(requests[0]?.http?.headers).toEqual({
       "x-session-affinity": sessionID,
       "X-Session-Id": sessionID,
@@ -499,6 +506,7 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
         recent: "",
         cost: 0.0000233,
         tokens: { input: 10, output: 4, reasoning: 2, cache: { read: 3, write: 2 } },
+        account: resolved.account?.scope,
       },
     ])
     expect(yield* store.get(sessionID)).toMatchObject({
@@ -658,6 +666,15 @@ it.effect("forked session compaction reuses the fork root prompt cache key", () 
     ).toEqual({ status: "completed" })
 
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.promptCacheKey).toBe(rootID)
+    expect(requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    const root = yield* insertSession(rootID)
+    yield* compaction.compactManual({
+      session: root,
+      resolveContext: () => Effect.succeed(loaded(root, messages)),
+      prepare: modelRequests.compaction,
+      messages,
+      inputID: SessionMessage.ID.make("msg_root_compaction"),
+    })
+    expect(requests[1]?.promptCacheKey).toBe(requests[0]?.promptCacheKey)
   }),
 )

@@ -57,6 +57,7 @@ import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { OptimizePlugin } from "@opencode/core/plugin/optimize"
 import { IdentityPlugin } from "@opencode/core/plugin/identity"
 import { NativeCompactionPlugin } from "@opencode/core/plugin/compaction"
+import { ModelAccount } from "@opencode/core/model-account"
 import { QuestionTool } from "@opencode/core/tool/plugin/question"
 import { Agent } from "@opencode/core/agent"
 import { Config } from "@opencode/core/config"
@@ -206,6 +207,7 @@ const makeRunnerState = (compaction?: SessionRunnerModel.Resolved["compaction"])
   return {
     currentModel: model,
     compaction,
+    currentAccount: "runner-account",
     modelResolveHook: Effect.void,
     systemBaseline: "Initial context",
     systemRemoved: false,
@@ -321,6 +323,7 @@ const layer = Layer.unwrap(
           Effect.map(() => {
             const selected = session.model?.id === "replacement" ? replacementModel : state.currentModel
             return SessionRunnerModel.resolved(selected, {
+              account: { identity: state.currentAccount },
               capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
               cost: [],
               limit: modelLimits.get(String(selected.id)) ?? defaultModelLimit,
@@ -1497,6 +1500,7 @@ describe("SessionRunnerLLM", () => {
       yield* s.runPrompt("Before checkpoint")
       const target = SessionProviderContext.provenance({
         model: s.currentModel,
+        account: { identity: s.currentAccount, scope: ModelAccount.scope(s.currentAccount, s.currentModel) },
         ref: Model.Ref.make({
           id: Model.ID.make(s.currentModel.id),
           providerID: Provider.ID.make(s.currentModel.provider),
@@ -4409,6 +4413,7 @@ describe("SessionRunnerLLM", () => {
     yield* s.bus.publish(SessionEvent.Step.Started, {
       sessionID,
       assistantMessageID,
+      account: ModelAccount.scope("runner-account", s.currentModel),
       agent: Agent.ID.make("build"),
       model: { id: ID.make("fake-model"), providerID: Provider.ID.make("fake") },
       started: 0,
@@ -4542,17 +4547,24 @@ describe("SessionRunnerLLM", () => {
 
   scenario("uses parent cache affinity for child model requests", function* (s) {
     const parentID = Session.ID.make("ses_runner_parent")
+    const lineage = (values: Partial<typeof SessionTable.$inferInsert>) =>
+      s.db.update(SessionTable).set(values).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie)
 
-    yield* s.db
-      .update(SessionTable)
-      .set({ parent_id: parentID })
-      .where(eq(SessionTable.id, sessionID))
-      .run()
-      .pipe(Effect.orDie)
+    yield* s.runPrompt("Run root request")
+    yield* lineage({ parent_id: parentID })
     yield* s.runPrompt("Run child request")
+    yield* lineage({
+      parent_id: null,
+      fork_session_id: parentID,
+      fork_boundary: { type: "through", messageID: SessionMessage.ID.make("msg_runner_boundary") },
+    })
+    yield* s.runPrompt("Run fork request")
 
-    expect(s.requests[0]?.http?.headers?.["x-parent-session-id"]).toBe(parentID)
-    expect(s.requests[0]?.promptCacheKey).toBe(parentID)
+    expect(s.requests[1]?.http?.headers?.["x-parent-session-id"]).toBe(parentID)
+    // Keys hash the affinity with the account scope, so the child's key follows its parent, not its own ID.
+    expect(s.requests[1]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(s.requests[1]?.promptCacheKey).not.toBe(s.requests[0]?.promptCacheKey)
+    expect(s.requests[2]?.promptCacheKey).toBe(s.requests[1]?.promptCacheKey)
   })
 
   scenario("runs different sessions concurrently", function* (s) {
@@ -4572,7 +4584,8 @@ describe("SessionRunnerLLM", () => {
     yield* stream.started
 
     expect(s.requests).toHaveLength(2)
-    expect(s.requests.map((request) => request.promptCacheKey)).toEqual([sessionID, otherSessionID])
+    expect(s.requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(s.requests[0]?.promptCacheKey).not.toBe(s.requests[1]?.promptCacheKey)
     yield* stream.release
     yield* Fiber.join(first)
     yield* Fiber.join(second)
@@ -4598,7 +4611,6 @@ describe("SessionRunnerLLM", () => {
     yield* s.session.resume(otherLongSessionID)
 
     const keys = s.requests.map((request) => request.promptCacheKey)
-    expect(keys).toEqual([longSessionID.slice(4), otherLongSessionID.slice(4)])
     expect(keys.every((key) => typeof key === "string" && key.length === 64)).toBe(true)
     expect(keys[0]).not.toBe(keys[1])
   })
@@ -5314,6 +5326,25 @@ describe("SessionRunnerLLM", () => {
     expect(yield* s.context).toMatchObject([
       { type: "user" },
       Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
+    ])
+  })
+
+  scenario("rebinds a pre-output retry to the newly selected account", function* (s) {
+    yield* s.admit("Retry after switching accounts")
+    yield* s.llm.push(Stream.fail(rateLimited(5_000)))
+    yield* s.llm.push(TestLLM.text("Recovered", "account-retry-success"))
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Queue.take(scheduled)
+    s.currentAccount = "second-account"
+    yield* TestClock.adjust("5000 millis")
+    yield* Fiber.join(run)
+    expect(s.requests).toHaveLength(2)
+    expect(s.requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(s.requests[1]?.promptCacheKey).not.toBe(s.requests[0]?.promptCacheKey)
+    expect(yield* s.context).toMatchObject([
+      { type: "user" },
+      { type: "assistant", account: ModelAccount.scope("second-account", s.currentModel) },
     ])
   })
 

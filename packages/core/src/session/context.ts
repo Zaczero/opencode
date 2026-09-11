@@ -25,6 +25,7 @@ import { SessionModelRequest } from "./model-request.js"
 import { SessionRunnerModel } from "./runner/model.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
+import { PluginHooks } from "../plugin/hooks.js"
 
 export interface Selection {
   readonly session: SessionSchema.Info
@@ -85,6 +86,7 @@ const layer = Layer.effect(
     const mcpTools = yield* McpTool.Service
     const models = yield* SessionRunnerModel.Service
     const request = yield* SessionModelRequest.Service
+    const hooks = yield* PluginHooks.Service
     const referenceInstructions = yield* ReferenceInstructions.Service
     const skillInstructions = yield* SkillInstructions.Service
     const store = yield* SessionStore.Service
@@ -163,7 +165,7 @@ const layer = Layer.effect(
         db,
         selection.session.id,
         selection.instructions,
-        SessionProviderContext.provenance(model) ?? "local",
+        yield* SessionProviderContext.boundary(model, hooks),
         cache,
       )
       return {
@@ -199,6 +201,7 @@ export const node = makeLocationNode({
     ReferenceInstructions.node,
     SessionRunnerModel.node,
     SessionModelRequest.node,
+    PluginHooks.node,
     SessionStore.node,
     SkillInstructions.node,
     Tool.node,

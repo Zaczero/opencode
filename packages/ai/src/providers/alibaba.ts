@@ -61,7 +61,7 @@ const messagesRoute = Route.make({
   protocol: AlibabaMessages.protocol,
   endpoint: Endpoint.path("/messages"),
   framing: Framing.sse,
-  headers: () => ({ "anthropic-version": "2023-06-01" }),
+  defaults: { headers: { "anthropic-version": "2023-06-01" } },
 })
 const responsesRoute = Route.make({
   id: "alibaba-responses",

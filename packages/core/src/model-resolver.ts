@@ -11,6 +11,7 @@ import { Capabilities, ID, Info, Model, Ref, VariantID } from "./model.js"
 import type { RuntimeInfo } from "./model.js"
 import { Npm } from "@opencode/util/npm"
 import { Provider } from "./provider.js"
+import { ModelAccount } from "./model-account.js"
 
 export class VariantUnavailableError extends Schema.TaggedError<VariantUnavailableError>()(
   "SessionRunnerModel.VariantUnavailableError",
@@ -122,6 +123,9 @@ export interface Resolved {
   readonly compaction?: Provider.Compaction
   /** Provider transport policy; omitted means HTTP. */
   readonly transport?: Provider.Transport
+  /** Credential snapshot used to construct this runtime model, including after refresh. */
+  readonly credential?: Credential.Value
+  readonly account?: { readonly identity: string; readonly scope?: string }
 }
 
 export interface Interface {
@@ -311,6 +315,11 @@ const nativeCredentialSettings = (specifier: string, credential: Credential.Valu
   return { apiKey: credential.access }
 }
 
+function configuredCredential(model: Info) {
+  const key = model.settings?.apiKey ?? model.settings?.authToken ?? model.settings?.accessToken
+  return typeof key === "string" && key.length > 0 ? Credential.Key.make({ type: "key", key }) : undefined
+}
+
 const unsupported = (model: RuntimeInfo) =>
   new UnsupportedPackageError({
     providerID: model.providerID,
@@ -376,8 +385,14 @@ export const layer = Layer.effect(
         usesAPIKeyAuth(runtimeInfo.package)
           ? LanguageModel.update(model, { route: model.route.with({ auth: Auth.none }) })
           : model
+      const identity = ModelAccount.identity(
+        credential ?? configuredCredential(runtimeInfo),
+        connection?.type === "credential" ? connection.id : undefined,
+      )
       return {
         model: runtime,
+        credential,
+        ...(identity ? { account: { identity, scope: ModelAccount.scope(identity, runtime) } } : {}),
         ref: Ref.make({
           id: selected.id,
           providerID: selected.providerID,

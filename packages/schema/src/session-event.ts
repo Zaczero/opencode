@@ -327,6 +327,7 @@ export namespace Step {
       assistantMessageID: SessionMessage.ID,
       agent: Agent.ID,
       model: Model.Ref,
+      account: SessionMessage.Assistant.fields.account,
       snapshot: Snapshot.ID.pipe(optional),
       /** Request dispatch time, before waiting for provider output. */
       started: NonNegativeInt,
@@ -601,6 +602,7 @@ export namespace Compaction {
       ...Base,
       reason: Started.data.fields.reason,
       model: SessionMessage.CompactionCompleted.fields.model,
+      account: SessionMessage.CompactionCompleted.fields.account,
       providerState: SessionMessage.CompactionCompleted.fields.providerState,
       providerContext: SessionMessage.CompactionCompleted.fields.providerContext,
       text: Schema.String,

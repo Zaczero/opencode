@@ -91,7 +91,9 @@ describe("provider package entrypoints", () => {
       expect(model.route.endpoint.baseURL).toBe(
         `https://llm-fixture.eu-central-1.maas.aliyuncs.com/${index === 2 ? "apps/anthropic/v1" : "compatible-mode/v1"}`,
       )
-      expect(model.route.defaults.headers).toEqual(settings.headers)
+      expect(model.route.defaults.headers).toEqual(
+        routes[index].endsWith("-messages") ? { "anthropic-version": "2023-06-01", ...settings.headers } : settings.headers,
+      )
       expect(model.route.defaults.http?.body).toEqual(settings.body)
     })
   })
@@ -141,7 +143,9 @@ describe("provider package entrypoints", () => {
       expect(selected.provider).toBe("minimax")
       expect(selected.route.id).toBe(routes[index])
       expect(selected.route.endpoint.baseURL).toBe(settings.baseURL)
-      expect(selected.route.defaults.headers).toEqual(settings.headers)
+      expect(selected.route.defaults.headers).toEqual(
+        routes[index].endsWith("-messages") ? { "anthropic-version": "2023-06-01", ...settings.headers } : settings.headers,
+      )
       expect(selected.route.defaults.http?.body).toEqual(settings.body)
     })
   })
@@ -176,7 +180,9 @@ describe("provider package entrypoints", () => {
       expect(selected.provider).toBe(index < 2 ? "zai" : "zai-coding-plan")
       expect(selected.route.id).toBe(routes[index])
       expect(selected.route.endpoint.baseURL).toBe(settings.baseURL)
-      expect(selected.route.defaults.headers).toEqual(settings.headers)
+      expect(selected.route.defaults.headers).toEqual(
+        routes[index].endsWith("-messages") ? { "anthropic-version": "2023-06-01", ...settings.headers } : settings.headers,
+      )
       expect(selected.route.defaults.http?.body).toEqual(settings.body)
     })
   })
@@ -307,7 +313,7 @@ describe("provider package entrypoints", () => {
     expect(
       Endpoint.render(selected.route.endpoint, { request: LLM.request({ model: selected }), body: {} }).toString(),
     ).toBe("https://messages.example.test/v1/messages")
-    expect(selected.route.defaults.headers).toEqual({ "x-application": "opencode" })
+    expect(selected.route.defaults.headers).toEqual({ "anthropic-version": "2023-06-01", "x-application": "opencode" })
     expect(selected.route.defaults.http?.body).toEqual({ metadata: { user_id: "user_1" } })
     expect(selected.route.defaults.providerOptions).toEqual({ effort: "low" })
   })

@@ -63,6 +63,7 @@ export type Settings = ProviderPackage.Settings &
     readonly baseURL?: string
     readonly organization?: string
     readonly project?: string
+    readonly accountID?: string
     readonly queryParams?: Readonly<Record<string, string>>
   }
 
@@ -126,10 +127,12 @@ const config = ({
   headers: given,
   organization,
   project,
+  accountID,
   queryParams,
   ...providerOptions
 }: Settings): Config => {
   const headers = {
+    ...(accountID === undefined ? {} : { "chatgpt-account-id": accountID }),
     ...(organization === undefined ? {} : { "OpenAI-Organization": organization }),
     ...(project === undefined ? {} : { "OpenAI-Project": project }),
     ...given,

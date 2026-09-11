@@ -1678,7 +1678,7 @@ export const route = Route.make({
   }),
   auth: Auth.none,
   transport: transport<AnthropicMessagesBody>(),
-  headers: () => ({ "anthropic-version": "2023-06-01" }),
+  defaults: { headers: { "anthropic-version": "2023-06-01" } },
 })
 
 export * as AnthropicMessages from "./anthropic-messages.js"

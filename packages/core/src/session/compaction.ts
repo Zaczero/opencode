@@ -173,7 +173,13 @@ const hasInputUsage = (message: SessionMessage.Info) =>
   message.tokens.input + message.tokens.cache.read + message.tokens.cache.write > 0
 
 export const estimateTokens = (input: RequiredInput) => {
-  const index = input.messages.findLastIndex(hasInputUsage)
+  // Usage reported under another account counted provider state this request no longer sends.
+  const index = input.messages.findLastIndex(
+    (message) =>
+      hasInputUsage(message) &&
+      message.type === "assistant" &&
+      message.account === input.resolved.account?.scope,
+  )
   const last = input.messages[index]
   // Keep the anchor's local tool results: they are not covered by its provider usage.
   const added = SessionModelRequest.unsupportedParts(
@@ -539,13 +545,17 @@ export const layer = Layer.effect(
       }
       const request = prepared.request
       const provenance = SessionProviderContext.provenance(context.model)
-      if (!provenance) return yield* reject("Provider compaction requires a stable, configured endpoint")
+      if (!provenance) return yield* reject("Provider compaction requires a stable endpoint and known account")
       // History is selected before request hooks. Until that interface can select on the final route,
       // require routing in the catalog; never install a checkpoint that the next request would skip.
       if (
         !SessionProviderContext.compatible(
           provenance,
-          SessionProviderContext.provenance({ model: request.model, ref: context.model.ref }),
+          SessionProviderContext.provenance({
+            ...context.model,
+            model: request.model,
+            account: context.model.account ? { ...context.model.account, scope: prepared.account } : undefined,
+          }),
         )
       )
         return yield* reject(
@@ -751,6 +761,7 @@ export const layer = Layer.effect(
         sessionID: context.session.id,
         reason: input.reason,
         model: context.model.ref,
+        account: prepared.account,
         providerState,
         text: summary,
         recent: history.recent,

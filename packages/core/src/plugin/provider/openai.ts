@@ -254,7 +254,6 @@ export const OpenAIPlugin = define({
     yield* ctx.provider.transform((providers) => {
       const item = providers.get(Provider.ID.openai)
       if (!item) return
-      const account = chatgpt?.metadata?.accountID
       providers.update(item.provider.id, (provider) => {
         provider.settings = Provider.mergeOverlay(provider.settings, {
           transport: provider.settings?.transport ?? "websocket",
@@ -264,7 +263,6 @@ export const OpenAIPlugin = define({
         provider.headers = Provider.mergeHeaders(provider.headers, {
           originator: "opencode",
           "x-codex-beta-features": "remote_compaction_v2",
-          ...(typeof account === "string" ? { "chatgpt-account-id": account } : {}),
         })
       })
     })
@@ -299,7 +297,13 @@ export const OpenAIPlugin = define({
       "model.request",
       (evt) =>
         Effect.sync(() => {
-          if (!chatgpt) return
+          if (
+            evt.credential?.type !== "oauth" ||
+            (evt.credential.methodID !== browserMethodID && evt.credential.methodID !== headlessMethodID)
+          ) {
+            if (evt.baseURL === codexBaseURL) evt.baseURL = "https://api.openai.com/v1"
+            return
+          }
           if (evt.baseURL && URL.canParse(evt.baseURL) && new URL(evt.baseURL).origin === "https://api.openai.com")
             evt.baseURL = codexBaseURL
           evt.headers.originator = "opencode"

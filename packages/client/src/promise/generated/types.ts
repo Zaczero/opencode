@@ -149,6 +149,7 @@ export type SessionProviderContextProvenance = {
   route: string
   protocol: string
   endpoint: string
+  account?: string
 }
 
 export type SessionMessageIdle = {
@@ -720,6 +721,7 @@ export type SessionStepStarted = {
     assistantMessageID: string
     agent: string
     model: ModelRef
+    account?: string
     snapshot?: string
     started: number
   }
@@ -1772,6 +1774,7 @@ export type SessionMessageCompactionCompleted = {
   status: "completed"
   reason: "auto" | "manual"
   model?: ModelRef
+  account?: string
   providerState?: SessionMessageProviderState
   summary: string
   recent: string
@@ -1791,6 +1794,7 @@ export type SessionCompactionEnded = {
     sessionID: string
     reason: "auto" | "manual"
     model?: ModelRef
+    account?: string
     providerState?: SessionMessageProviderState1
     providerContext?: SessionProviderContext
     text: string
@@ -2234,6 +2238,7 @@ export type SessionMessageAssistant = {
   type: "assistant"
   agent: string
   model: ModelRef
+  account?: string
   content: Array<SessionMessageAssistantText | SessionMessageAssistantReasoning | SessionMessageAssistantTool>
   snapshot?: { start?: string; end?: string; files?: Array<string> }
   finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown"
@@ -3111,6 +3116,7 @@ export type SessionImportInput = {
           readonly type: "assistant"
           readonly agent: string
           readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+          readonly account?: string
           readonly content: ReadonlyArray<
             | { readonly type: "text"; readonly text: string; readonly state?: { readonly [x: string]: JsonValue } }
             | {
@@ -3224,6 +3230,7 @@ export type SessionImportInput = {
               readonly status: "completed"
               readonly reason: "auto" | "manual"
               readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+              readonly account?: string
               readonly providerState?: { readonly [x: string]: JsonValue }
               readonly summary: string
               readonly recent: string
@@ -3236,6 +3243,7 @@ export type SessionImportInput = {
                   readonly route: string
                   readonly protocol: string
                   readonly endpoint: string
+                  readonly account?: string
                 }
                 readonly messages: JsonValue
               }
@@ -3428,6 +3436,7 @@ export type SessionImportInput = {
           readonly type: "assistant"
           readonly agent: string
           readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+          readonly account?: string
           readonly content: ReadonlyArray<
             | { readonly type: "text"; readonly text: string; readonly state?: { readonly [x: string]: JsonValue } }
             | {
@@ -3541,6 +3550,7 @@ export type SessionImportInput = {
               readonly status: "completed"
               readonly reason: "auto" | "manual"
               readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+              readonly account?: string
               readonly providerState?: { readonly [x: string]: JsonValue }
               readonly summary: string
               readonly recent: string
@@ -3553,6 +3563,7 @@ export type SessionImportInput = {
                   readonly route: string
                   readonly protocol: string
                   readonly endpoint: string
+                  readonly account?: string
                 }
                 readonly messages: JsonValue
               }
@@ -3745,6 +3756,7 @@ export type SessionImportInput = {
           readonly type: "assistant"
           readonly agent: string
           readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+          readonly account?: string
           readonly content: ReadonlyArray<
             | { readonly type: "text"; readonly text: string; readonly state?: { readonly [x: string]: JsonValue } }
             | {
@@ -3858,6 +3870,7 @@ export type SessionImportInput = {
               readonly status: "completed"
               readonly reason: "auto" | "manual"
               readonly model?: { readonly id: string; readonly providerID: string; readonly variant?: string }
+              readonly account?: string
               readonly providerState?: { readonly [x: string]: JsonValue }
               readonly summary: string
               readonly recent: string
@@ -3870,6 +3883,7 @@ export type SessionImportInput = {
                   readonly route: string
                   readonly protocol: string
                   readonly endpoint: string
+                  readonly account?: string
                 }
                 readonly messages: JsonValue
               }

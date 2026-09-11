@@ -204,6 +204,11 @@ const table = sqliteTable("session", {
   `subagent_interrupt` targets direct children, cancels their background shells, and
   distinguishes a settled stop from an interrupt still awaiting cleanup. Cancelled
   shells do not wake their session; cancelled subagent jobs notify their parent.
+- `Tool.Info.format` carries a raw-input grammar through `ToolDefinition.format`.
+  OpenAI Responses uses custom tools; other routes retain JSON function encoding.
+  Keep advertisement, streaming, tool choice, and history replay consistent.
+  `apply_patch` uses this contract with `patchText` as its string input property;
+  the existing TUI canonicalizes its name to `patch`.
 - Keep `SessionExecution` process-global and Session-ID based. Its local implementation owns the process-local Session coordinator and discovers placement through `SessionStore` plus `LocationServiceMap.get(session.location)` only when a drain starts; no layer should take a Session ID. V2 interruption targets the active process-local ownership chain for that Session; interruption of a known but idle or locally unowned Session is a no-op, while the public API rejects an unknown Session.
 - Keep `SessionRunner`, model resolution, tool registry, permissions, and filesystem Location-scoped. Omitted `Location.workspaceID` means implicit-local placement; explicit workspace identity remains reserved for future placement semantics.
 - Preserve one explicit `llm.stream(request)` call per Physical Attempt and reload projected history before durable continuation. A logical Step may use generic pre-output retries, one full-context retry after continuation rejection, incomplete-stream continuation, or one overflow-compaction rebuild. Generic retries retain the logical step number and do not consume another agent-step allowance. Do not delegate orchestration to an in-memory tool loop.

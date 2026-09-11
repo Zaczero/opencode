@@ -7,11 +7,11 @@ type StreamKey = string | number
 const parsePartialInput = Option.liftThrowable(parse)
 
 /**
- * One pending streamed tool call. Providers emit the tool identity and JSON
- * argument text across separate chunks; `input` is the raw JSON string collected
- * so far, not the parsed object.
+ * One pending streamed tool call. `input` holds the accumulated argument text;
+ * `rawInputKey` wraps freeform text in that input property instead of parsing JSON.
  */
 export interface PendingTool extends ToolAccumulator {
+  readonly rawInputKey?: string
   readonly providerExecuted?: boolean
   readonly providerMetadata?: ProviderMetadata
 }
@@ -70,7 +70,9 @@ const inputDelta = (tool: PendingTool, text: string) =>
 
 const toolCall = (route: string, tool: PendingTool, inputOverride?: string) => {
   const raw = inputOverride ?? tool.input
-  return parseToolInput(route, tool.name, raw).pipe(
+  return (
+    tool.rawInputKey === undefined ? parseToolInput(route, tool.name, raw) : Effect.succeed({ [tool.rawInputKey]: raw })
+  ).pipe(
     Effect.catch((error) =>
       tool.providerExecuted
         ? Effect.fail(error)
@@ -158,6 +160,7 @@ export const appendOrStart = <K extends StreamKey>(
     id,
     name,
     namespace: current?.namespace,
+    rawInputKey: current?.rawInputKey,
     input: `${current?.input ?? ""}${delta.text}`,
     providerExecuted: current?.providerExecuted,
     providerMetadata: current?.providerMetadata,

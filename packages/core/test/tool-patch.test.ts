@@ -131,7 +131,7 @@ const withTool = <A, E, R>(
 const call = (patchText: string, id = "call-patch") => ({
   sessionID,
   ...toolIdentity,
-  call: { type: "tool-call" as const, id, name: "patch", input: { patchText } },
+  call: { type: "tool-call" as const, id, name: "apply_patch", input: { patchText } },
 })
 
 const exists = (target: string) =>
@@ -166,7 +166,10 @@ describe("PatchTool", () => {
           Effect.andThen(
             withTool(tmp.path, (registry) =>
               Effect.gen(function* () {
-                expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["patch", "execute"])
+                const definitions = yield* toolDefinitions(registry)
+                expect(definitions.map((tool) => tool.name)).toEqual(["apply_patch", "execute"])
+                expect(definitions[0]?.format).toEqual(PatchTool.format)
+                expect(PatchTool.format.definition).toContain('begin_patch: "*** Begin Patch" LF')
                 const settled = yield* executeTool(
                   registry,
                   call(
@@ -604,14 +607,14 @@ describe("PatchTool", () => {
           status: "error",
           error: {
             type: "tool.execution",
-            message: "patch verification failed: The first line of the patch must be '*** Begin Patch'",
+            message: "apply_patch verification failed: The first line of the patch must be '*** Begin Patch'",
           },
         })
         expect(yield* executeTool(registry, call("*** Begin Patch\n*** Add File: foo\n+hello"))).toEqual({
           status: "error",
           error: {
             type: "tool.execution",
-            message: "patch verification failed: The last line of the patch must be '*** End Patch'",
+            message: "apply_patch verification failed: The last line of the patch must be '*** End Patch'",
           },
         })
       }),
@@ -629,7 +632,7 @@ describe("PatchTool", () => {
         ]) {
           expect(yield* executeTool(registry, call(patchText))).toEqual({
             status: "error",
-            error: { type: "tool.execution", message: "patch rejected: empty patch" },
+            error: { type: "tool.execution", message: "apply_patch rejected: empty patch" },
           })
         }
       }),
@@ -644,7 +647,7 @@ describe("PatchTool", () => {
           error: {
             type: "tool.execution",
             message:
-              "patch verification failed: Invalid hunk at line 2: '*** Frobnicate File: foo' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+              "apply_patch verification failed: Invalid hunk at line 2: '*** Frobnicate File: foo' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
           },
         })
       }),
@@ -709,7 +712,7 @@ describe("PatchTool", () => {
           status: "error",
           error: {
             type: "tool.execution",
-            message: "patch verification failed: Failed to find expected lines in unchanged.txt:\nmissing",
+            message: "apply_patch verification failed: Failed to find expected lines in unchanged.txt:\nmissing",
           },
         })
         expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("line1\nline2\n")
@@ -729,7 +732,7 @@ describe("PatchTool", () => {
           status: "error",
           error: {
             message: expect.stringContaining(
-              `patch verification failed: Failed to read file to update ${path.join(directory, "missing.txt")}: `,
+              `apply_patch verification failed: Failed to read file to update ${path.join(directory, "missing.txt")}: `,
             ),
           },
         })
@@ -747,7 +750,7 @@ describe("PatchTool", () => {
           status: "error",
           error: {
             type: "tool.execution",
-            message: `patch verification failed: Failed to read file to update ${path.join(directory, "nested")}: path is a directory`,
+            message: `apply_patch verification failed: Failed to read file to update ${path.join(directory, "nested")}: path is a directory`,
           },
         })
       }),
@@ -763,7 +766,7 @@ describe("PatchTool", () => {
           status: "error",
           error: {
             type: "tool.execution",
-            message: "patch verification failed: Failed to delete missing.txt: file does not exist",
+            message: "apply_patch verification failed: Failed to delete missing.txt: file does not exist",
           },
         })
       }),
@@ -1138,7 +1141,7 @@ describe("PatchTool", () => {
             ).toMatchObject({
               status: "error",
               error: {
-                message: expect.stringContaining("patch verification failed: Failed to read file to update"),
+                message: expect.stringContaining("apply_patch verification failed: Failed to read file to update"),
               },
             })
             expect(yield* exists(path.join(tmp.path, "created.txt"))).toBe(false)

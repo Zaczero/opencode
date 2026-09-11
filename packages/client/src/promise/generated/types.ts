@@ -2254,7 +2254,7 @@ export type SessionEventDurable =
 export type IntegrationInfo = {
   id: string
   name: string
-  metadata?: { [x: string]: any }
+  metadata?: { [x: string]: JsonValue }
   methods: Array<IntegrationMethod>
   connections: Array<ConnectionInfo>
 }

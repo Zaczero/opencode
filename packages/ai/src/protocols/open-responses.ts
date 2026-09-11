@@ -6,6 +6,7 @@ import {
   AIError,
   LLMEvent,
   ProviderInternalError,
+  ToolInputFormat,
   Usage,
   type FinishReason,
   type JsonSchema,
@@ -204,6 +205,20 @@ export const InputItem = Schema.Union([
     call_id: Schema.String,
     output: OpenResponsesFunctionCallOutput,
   }),
+  // Freeform (custom) tool calls carry raw text instead of JSON arguments; their
+  // outputs share the function output encoding.
+  Schema.Struct({
+    type: Schema.tag("custom_tool_call"),
+    id: Schema.optionalKey(Schema.String),
+    call_id: Schema.String,
+    name: Schema.String,
+    input: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.tag("custom_tool_call_output"),
+    call_id: Schema.String,
+    output: OpenResponsesFunctionCallOutput,
+  }),
   HostedToolItem,
 ])
 type OpenResponsesInputItem = Schema.Schema.Type<typeof InputItem>
@@ -232,21 +247,31 @@ type OpenResponsesReasoningInput = {
   summary: Array<{ type: "summary_text"; text: string }>
   encrypted_content?: string | null
 }
-export const Tool = Schema.Struct({
-  type: Schema.tag("function"),
-  name: Schema.String,
-  description: Schema.String,
-  parameters: JsonObject,
-  strict: Schema.optional(Schema.Boolean),
-})
+export const Tool = Schema.Union([
+  Schema.Struct({
+    type: Schema.tag("function"),
+    name: Schema.String,
+    description: Schema.String,
+    parameters: JsonObject,
+    strict: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.tag("custom"),
+    name: Schema.String,
+    description: Schema.String,
+    format: ToolInputFormat,
+  }),
+])
+
+const ToolChoiceEntry = Schema.Struct({ type: Schema.Literals(["function", "custom"]), name: Schema.String })
 
 export const ToolChoice = Schema.Union([
   Schema.Literals(["auto", "none", "required"]),
-  Schema.Struct({ type: Schema.tag("function"), name: Schema.String }),
+  ToolChoiceEntry,
   Schema.Struct({
     type: Schema.tag("allowed_tools"),
     mode: Schema.Literals(["auto", "none", "required"]),
-    tools: Schema.Array(Schema.Struct({ type: Schema.tag("function"), name: Schema.String })),
+    tools: Schema.Array(ToolChoiceEntry),
   }),
 ])
 
@@ -326,6 +351,7 @@ export const StreamItem = Schema.StructWithRest(
     name: Schema.optional(Schema.String),
     namespace: Schema.optional(Schema.String),
     arguments: Schema.optional(Schema.String),
+    input: Schema.optional(Schema.String),
     encrypted_content: optionalNull(Schema.String),
   }),
   [Schema.Record(Schema.String, Schema.Unknown)],
@@ -346,6 +372,7 @@ export const Event = Schema.StructWithRest(
     type: Schema.String,
     delta: Schema.optional(Schema.String),
     arguments: Schema.optional(Schema.String),
+    input: Schema.optional(Schema.String),
     text: Schema.optional(Schema.String),
     item_id: Schema.optional(Schema.String),
     output_index: Schema.optional(Schema.Number),
@@ -407,12 +434,44 @@ export interface ProviderAdapter {
     readonly request: LLMRequest
   }) => MediaInput | undefined
   readonly restoreHostedToolItem?: (item: unknown) => HostedToolReplayItem | undefined
+  /**
+   * Whether the provider accepts `custom` tools with a grammar `format`. Tools carrying a
+   * format are then advertised, replayed, and decoded as freeform text under their sole
+   * string property; without it they stay ordinary JSON function tools.
+   */
+  readonly freeformTools?: boolean
 }
 
 const BASE_ADAPTER: ProviderAdapter = { id: ADAPTER, name: NAME }
 
+/** The sole string property a freeform tool's raw input fills, or undefined when the tool is not freeform. */
+export const freeformInputKey = (tool: ToolDefinition): string | undefined => {
+  if (tool.format === undefined || tool.inputSchema.type !== "object") return undefined
+  if (!ProviderShared.isRecord(tool.inputSchema.properties)) return undefined
+  const keys = Object.keys(tool.inputSchema.properties)
+  if (keys.length !== 1) return undefined
+  const key = keys[0]!
+  const property = tool.inputSchema.properties[key]
+  return ProviderShared.isRecord(property) && property.type === "string" ? key : undefined
+}
+
+/** Freeform tool names advertised by this request, mapped to the property their raw input fills. */
+export const freeformTools = (request: LLMRequest, adapter: ProviderAdapter): Readonly<Record<string, string>> => {
+  if (adapter.freeformTools !== true) return {}
+  return Object.fromEntries(
+    request.tools.flatMap((tool) => {
+      // Native namespaces advertise JSON functions, even when a leaf carries a grammar.
+      if (tool.type !== "tool") return []
+      const key = freeformInputKey(tool)
+      return key === undefined ? [] : [[tool.name, key] as const]
+    }),
+  )
+}
+
 export interface ParserState {
   readonly provider: LLMRequest["model"]["provider"]
+  /** Freeform tool names to the property their raw input fills, for wrapping custom tool calls. */
+  readonly freeform: Readonly<Record<string, string>>
   readonly completedCompactions: ReadonlySet<string>
   readonly id: string
   readonly name: string
@@ -459,6 +518,14 @@ export const lowerTool = Effect.fn("OpenResponses.lowerTool")(function* (
   }
 })
 
+/** Advertise a tool with a grammar as a freeform custom tool; the caller has checked `freeformInputKey`. */
+export const lowerFreeformTool = (tool: ToolDefinition, format: ToolInputFormat) => ({
+  type: "custom" as const,
+  name: tool.name,
+  description: `${tool.description}\n\nThis is a freeform tool: send the raw text as the tool input. Do not wrap it in JSON.`,
+  format,
+})
+
 export const lowerToolChoice = (protocolName: string, toolChoice: NonNullable<LLMRequest["toolChoice"]>) =>
   ProviderShared.matchToolChoice(protocolName, toolChoice, {
     auto: () => "auto" as const,
@@ -476,8 +543,24 @@ const itemID = (providerMetadata: ProviderMetadata | undefined, providerMetadata
   return separator > 0 && separator < metadata.itemId.length - 1 ? metadata.itemId : undefined
 }
 
-const lowerToolCall = (part: ToolCallPart, providerMetadataKey: string): OpenResponsesInputItem => {
+// A call to a tool the current request advertises as freeform replays as a custom
+// tool call carrying the raw text, whatever encoding produced it: the provider
+// matches replayed calls against the tools it is given now.
+const lowerToolCall = (
+  part: ToolCallPart,
+  providerMetadataKey: string,
+  freeformKey: string | undefined,
+): Extract<OpenResponsesInputItem, { readonly type: "function_call" | "custom_tool_call" }> => {
   const id = itemID(part.providerMetadata, providerMetadataKey)
+  const raw = freeformKey === undefined || !ProviderShared.isRecord(part.input) ? undefined : part.input[freeformKey]
+  if (typeof raw === "string")
+    return {
+      type: "custom_tool_call",
+      ...(id === undefined ? {} : { id }),
+      call_id: part.id,
+      name: part.name,
+      input: raw,
+    }
   return {
     type: "function_call",
     ...(id === undefined ? {} : { id }),
@@ -604,6 +687,8 @@ const lowerMessages = Effect.fn("OpenResponses.lowerMessages")(function* (
 ) {
   const input: LoweredInputItem[] = []
   const providerMetadataKey = metadataKey(request.model)
+  const freeform = freeformTools(request, adapter)
+  const customCalls = new Set<string>()
 
   for (const message of request.messages) {
     const metadata = yield* ProviderShared.validateWith(
@@ -696,7 +781,13 @@ const lowerMessages = Effect.fn("OpenResponses.lowerMessages")(function* (
         if (part.type === "tool-call") {
           flushText()
           if (part.providerExecuted === true) continue
-          input.push(lowerToolCall(part, providerMetadataKey))
+          const call = lowerToolCall(
+            part,
+            providerMetadataKey,
+            part.namespace === undefined ? freeform[part.name] : undefined,
+          )
+          if (call.type === "custom_tool_call") customCalls.add(part.id)
+          input.push(call)
           continue
         }
         if (part.type === "tool-result" && part.providerExecuted === true) {
@@ -740,11 +831,12 @@ const lowerMessages = Effect.fn("OpenResponses.lowerMessages")(function* (
     for (const part of message.content) {
       if (!ProviderShared.supportsContent(part, ["tool-result"]))
         return yield* ProviderShared.unsupportedContent(adapter.name, "tool", ["tool-result"])
-      input.push({
-        type: "function_call_output",
-        call_id: part.id,
-        output: yield* lowerToolResultOutput(part, request, adapter),
-      })
+      const output = yield* lowerToolResultOutput(part, request, adapter)
+      input.push(
+        customCalls.has(part.id)
+          ? { type: "custom_tool_call_output", call_id: part.id, output }
+          : { type: "function_call_output", call_id: part.id, output },
+      )
     }
   }
 
@@ -801,13 +893,18 @@ export const resolveParallelToolCalls = (request: LLMRequest) => {
   return disabled === undefined ? undefined : !disabled
 }
 
-export const allowedToolChoice = (request: LLMRequest) => {
+export const allowedToolChoice = (request: LLMRequest, adapter: ProviderAdapter = BASE_ADAPTER) => {
+  if (request.toolChoice?.type === "none") return undefined
   const allowed = OpenResponsesOptions.resolve(request).allowedTools
   if (!allowed) return undefined
+  const freeform = freeformTools(request, adapter)
   return {
     type: "allowed_tools" as const,
     mode: allowed.mode,
-    tools: allowed.toolNames.map((name) => ({ type: "function" as const, name })),
+    tools: allowed.toolNames.map((name) => ({
+      type: freeform[name] === undefined ? ("function" as const) : ("custom" as const),
+      name,
+    })),
   }
 }
 
@@ -937,6 +1034,7 @@ const ITEM_ID_PREFIX: Readonly<Record<string, string>> = {
   message: "msg",
   reasoning: "rs",
   function_call: "fc",
+  custom_tool_call: "ctc",
   compaction: "cmp",
 }
 
@@ -1097,7 +1195,7 @@ const onOutputItemAdded = (state: ParserState, event: NormalizedEvent): StepResu
       events,
     ]
   }
-  if (item.type !== "function_call" || !item.call_id) return [state, NO_EVENTS]
+  if ((item.type !== "function_call" && item.type !== "custom_tool_call") || !item.call_id) return [state, NO_EVENTS]
   if (state.tools[item.id] !== undefined) return [state, NO_EVENTS]
   const metadata = providerMetadata(state, { itemId: item.id })
   const events: LLMEvent[] = []
@@ -1110,7 +1208,8 @@ const onOutputItemAdded = (state: ParserState, event: NormalizedEvent): StepResu
         id: item.call_id,
         name: item.name ?? "",
         namespace: item.namespace,
-        input: item.arguments ?? "",
+        rawInputKey: item.type === "custom_tool_call" ? (state.freeform[item.name ?? ""] ?? "input") : undefined,
+        input: (item.type === "custom_tool_call" ? item.input : item.arguments) ?? "",
         providerMetadata: metadata,
       }),
     },
@@ -1161,9 +1260,11 @@ const onFunctionCallArgumentsDelta = Effect.fn("OpenResponses.onFunctionCallArgu
   if (event.item_id === undefined) return [state, NO_EVENTS] satisfies StepResult
   const tool = state.tools[event.item_id]
   if (!tool) return [state, NO_EVENTS] satisfies StepResult
-  const final = event.type === "response.function_call_arguments.done" ? event.arguments : undefined
-  if (event.type === "response.function_call_arguments.done" && final === undefined)
-    return [state, NO_EVENTS] satisfies StepResult
+  // Function arguments and custom tool input stream the same way; only the field naming differs.
+  const done =
+    event.type === "response.function_call_arguments.done" || event.type === "response.custom_tool_call_input.done"
+  const final = !done ? undefined : (event.arguments ?? event.input)
+  if (done && final === undefined) return [state, NO_EVENTS] satisfies StepResult
   if (final !== undefined && !final.startsWith(tool.input))
     return [
       { ...state, tools: ToolStream.start(state.tools, event.item_id, { ...tool, input: final }) },
@@ -1235,7 +1336,7 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
     ] satisfies StepResult
   }
 
-  if (item.type === "function_call") {
+  if (item.type === "function_call" || item.type === "custom_tool_call") {
     if (!item.call_id || !item.name) return [state, NO_EVENTS] satisfies StepResult
     const metadata = providerMetadata(state, { itemId: item.id })
     const registered = state.tools[item.id] !== undefined
@@ -1245,12 +1346,14 @@ const onOutputItemDone = Effect.fn("OpenResponses.onOutputItemDone")(function* (
           id: item.call_id,
           name: item.name,
           namespace: item.namespace,
+          rawInputKey: item.type === "custom_tool_call" ? (state.freeform[item.name] ?? "input") : undefined,
           providerMetadata: metadata,
         })
+    const final = item.type === "custom_tool_call" ? item.input : item.arguments
     const result =
-      item.arguments === undefined
+      final === undefined
         ? yield* ToolStream.finish(state.id, tools, item.id)
-        : yield* ToolStream.finishWithInput(state.id, tools, item.id, item.arguments)
+        : yield* ToolStream.finishWithInput(state.id, tools, item.id, final)
     const events: LLMEvent[] = []
     const finished = result.events ?? []
     // A done-only call never streamed a start event, so open its lifecycle here.
@@ -1334,7 +1437,8 @@ const onResponseFinish = Effect.fn("OpenResponses.onResponseFinish")(function* (
           "Cannot recover a compaction checkpoint after output has been emitted",
         )
       const recoverable =
-        item.type === "compaction" || (item.type === "function_call" && current.tools[item.id] !== undefined)
+        item.type === "compaction" ||
+        ((item.type === "function_call" || item.type === "custom_tool_call") && current.tools[item.id] !== undefined)
       if (!recoverable) continue
       const [next, emitted] = yield* onOutputItemDone(current, item)
       current = next
@@ -1458,7 +1562,12 @@ export const step = (state: ParserState, event: NormalizedEvent) => {
       ),
     )
   }
-  if (event.type === "response.function_call_arguments.delta" || event.type === "response.function_call_arguments.done")
+  if (
+    event.type === "response.function_call_arguments.delta" ||
+    event.type === "response.function_call_arguments.done" ||
+    event.type === "response.custom_tool_call_input.delta" ||
+    event.type === "response.custom_tool_call_input.done"
+  )
     return event.item_id !== undefined
       ? onFunctionCallArgumentsDelta(state, event)
       : ProviderShared.eventError(state.id, `${event.type} is missing item_id`)
@@ -1478,6 +1587,7 @@ export const step = (state: ParserState, event: NormalizedEvent) => {
  */
 export const initial = (request: LLMRequest, adapter: ProviderAdapter = BASE_ADAPTER): ParserState => ({
   provider: request.model.provider,
+  freeform: freeformTools(request, adapter),
   completedCompactions: new Set<string>(),
   id: adapter.id,
   name: adapter.name,

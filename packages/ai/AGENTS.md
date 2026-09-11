@@ -186,6 +186,12 @@ const followUp = LLM.request({
 
 Routes lower these into provider-native assistant tool-call messages and tool-result messages. Streaming providers should emit `tool-input-delta` events while arguments arrive, then a final `tool-call` event with parsed input.
 
+OpenAI Responses advertises a top-level grammar tool as `custom` only when its input
+schema has one string property. Namespaced tools remain JSON functions. Match tool
+choice and replay to that advertised encoding; a replayed result follows its call's
+actual encoding. `ToolStream.rawInputKey` preserves freeform text through both item
+completion and end-of-response recovery, without routing it through the JSON parser.
+
 ### Tool dispatch
 
 `LLM.stream(request)` and `LLM.generate(request)` each run exactly one model call. Add tool schemas to `request.tools` with `Tool.toDefinitions(tools)`. When a caller wants the package's typed one-call execution behavior, pass each canonical local `tool-call` event to `ToolRuntime.dispatch(tools, call)`.

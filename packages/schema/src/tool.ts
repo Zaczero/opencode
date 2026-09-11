@@ -24,6 +24,17 @@ export interface Namespace {
   readonly description: string
 }
 
+/**
+ * A grammar over the tool's raw text input. A provider that supports freeform
+ * tools sends the sole string property of `input` as text under it; every other
+ * provider keeps the JSON schema contract.
+ */
+export interface InputFormat {
+  readonly type: "grammar"
+  readonly syntax: "lark" | "regex"
+  readonly definition: string
+}
+
 interface BaseOptions {
   readonly namespace?: string
   readonly permission?: string
@@ -98,5 +109,6 @@ export type Info<
   readonly description: string
   readonly execute: (input: InputValue<Input>, context: Context) => Effect.Effect<Result<Output>, Error>
   readonly output?: Output
+  readonly format?: InputFormat
   readonly options?: Options
 }

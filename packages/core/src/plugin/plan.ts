@@ -45,7 +45,7 @@ export const Plugin = define({
     yield* ctx.tool.hook("execute.after", (event) => {
       if (event.agent !== plan) return Effect.void
       if (event.status !== "error") return Effect.void
-      if (event.tool !== "edit" && event.tool !== "write" && event.tool !== "patch") return Effect.void
+      if (event.tool !== "edit" && event.tool !== "write" && event.tool !== "apply_patch") return Effect.void
       if (!(event.error.error instanceof Permission.BlockedError)) return Effect.void
       event.error = new ToolFailure({
         message: `Cannot use ${event.tool} to modify files outside the Plan directory: ${directory}`,

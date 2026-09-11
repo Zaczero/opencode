@@ -135,6 +135,168 @@ const expectToolOutput = (body: OpenAIResponses.OpenAIResponsesBody): OpenAITool
 }
 
 describe("OpenAI Responses route", () => {
+  it.effect("disables tool calls without dropping definitions or honoring a required allowlist", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          prompt: "Summarize the conversation without calling tools",
+          tools: [{ name: "read", description: "Read a file", inputSchema: { type: "object", properties: {} } }],
+          toolChoice: { type: "none", disableParallelToolUse: true },
+          providerOptions: { allowedTools: { toolNames: ["read"], mode: "required" } },
+        }),
+      )
+      expect(prepared.body.tool_choice).toBe("none")
+      expect(prepared.body.tools).toHaveLength(1)
+      expect(prepared.body.parallel_tool_calls).toBe(false)
+    }),
+  )
+
+  it.effect("advertises a grammar tool as a freeform custom tool and replays its calls as raw text", () =>
+    Effect.gen(function* () {
+      const format = { type: "grammar" as const, syntax: "lark" as const, definition: 'start: "*** Begin Patch"' }
+      const tools = [
+        {
+          name: "apply_patch",
+          description: "Edit files.",
+          inputSchema: { type: "object", properties: { patchText: { type: "string" } }, required: ["patchText"] },
+          format,
+        },
+        { name: "read", description: "Read a file", inputSchema: { type: "object", properties: {} } },
+      ]
+      const messages = [
+        Message.user("Fix it."),
+        Message.assistant([
+          ToolCallPart.make({
+            id: "call_1",
+            name: "apply_patch",
+            input: { patchText: "*** Begin Patch\n*** End Patch" },
+          }),
+        ]),
+        Message.tool({
+          id: "call_1",
+          name: "apply_patch",
+          result: "Success. Updated the following files:",
+          resultType: "text",
+        }),
+        Message.assistant([ToolCallPart.make({ id: "call_2", name: "read", input: { path: "a" } })]),
+        Message.tool({ id: "call_2", name: "read", result: "contents", resultType: "text" }),
+      ]
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          messages,
+          tools,
+          providerOptions: { allowedTools: { toolNames: ["apply_patch", "read"], mode: "auto" } },
+        }),
+      )
+      expect(prepared.body.tools).toEqual([
+        {
+          type: "custom",
+          name: "apply_patch",
+          description: expect.stringContaining("Edit files.\n\nThis is a freeform tool"),
+          format,
+        },
+        { type: "function", name: "read", description: "Read a file", parameters: expect.any(Object), strict: false },
+      ])
+      expect(prepared.body.tool_choice).toEqual({
+        type: "allowed_tools",
+        mode: "auto",
+        tools: [
+          { type: "custom", name: "apply_patch" },
+          { type: "function", name: "read" },
+        ],
+      })
+      expect(prepared.body.input).toMatchObject([
+        { role: "user", content: [{ type: "input_text", text: "Fix it." }] },
+        { type: "custom_tool_call", call_id: "call_1", name: "apply_patch", input: "*** Begin Patch\n*** End Patch" },
+        { type: "custom_tool_call_output", call_id: "call_1", output: "Success. Updated the following files:" },
+        { type: "function_call", call_id: "call_2", name: "read", arguments: '{"path":"a"}' },
+        { type: "function_call_output", call_id: "call_2", output: "contents" },
+      ])
+
+      // A route without freeform tools keeps the JSON function contract for the same history.
+      const generic = yield* compileRequest(LLM.request({ model: xaiModel, messages, tools }))
+      expect(generic.body.tools).toMatchObject([
+        { type: "function", name: "apply_patch", parameters: expect.any(Object) },
+        { type: "function", name: "read" },
+      ])
+      expect(generic.body.input).toMatchObject([
+        { role: "user" },
+        { type: "function_call", call_id: "call_1", name: "apply_patch" },
+        { type: "function_call_output", call_id: "call_1" },
+        { type: "function_call", call_id: "call_2" },
+        { type: "function_call_output", call_id: "call_2" },
+      ])
+    }),
+  )
+
+  it.effect("decodes a streamed custom tool call into the tool's sole input property", () =>
+    Effect.gen(function* () {
+      const item = { type: "custom_tool_call", id: "ctc_1", call_id: "call_1", name: "apply_patch", input: "" }
+      const response = yield* LLMClient.generate(
+        LLM.request({
+          model,
+          prompt: "Fix it.",
+          tools: [
+            {
+              name: "apply_patch",
+              description: "Edit files.",
+              inputSchema: { type: "object", properties: { patchText: { type: "string" } }, required: ["patchText"] },
+              format: { type: "grammar", syntax: "lark", definition: 'start: "*** Begin Patch"' },
+            },
+          ],
+        }),
+      ).pipe(
+        Effect.provide(
+          fixedResponse(
+            sseEvents(
+              { type: "response.output_item.added", output_index: 0, item },
+              {
+                type: "response.custom_tool_call_input.delta",
+                output_index: 0,
+                item_id: "ctc_1",
+                delta: "*** Begin Patch\n",
+              },
+              {
+                type: "response.custom_tool_call_input.delta",
+                output_index: 0,
+                item_id: "ctc_1",
+                delta: "*** End Patch",
+              },
+              {
+                type: "response.custom_tool_call_input.done",
+                output_index: 0,
+                item_id: "ctc_1",
+                input: "*** Begin Patch\n*** End Patch",
+              },
+              {
+                type: "response.output_item.done",
+                output_index: 0,
+                item: { ...item, status: "completed", input: "*** Begin Patch\n*** End Patch" },
+              },
+              { type: "response.completed", response: { id: "resp_1" } },
+            ),
+          ),
+        ),
+      )
+
+      expect(response.events.filter((event) => event.type === "tool-input-delta")).toMatchObject([
+        { id: "call_1", name: "apply_patch", text: "*** Begin Patch\n" },
+        { id: "call_1", name: "apply_patch", text: "*** End Patch" },
+      ])
+      expect(response.events.filter(LLMEvent.is.toolCall)).toEqual([
+        expect.objectContaining({
+          id: "call_1",
+          name: "apply_patch",
+          input: { patchText: "*** Begin Patch\n*** End Patch" },
+          providerMetadata: { openai: { itemId: "ctc_1" } },
+        }),
+      ])
+      expect(response.finishReason.normalized).toBe("tool-calls")
+    }),
+  )
+
   it.effect("prepares OpenAI Responses target", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(request)

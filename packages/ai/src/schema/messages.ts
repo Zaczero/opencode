@@ -282,11 +282,24 @@ export namespace Message {
     make({ role: "tool", content: ["type" in result ? result : ToolResultPart.make(result)] })
 }
 
+/**
+ * A grammar the model's raw tool input must satisfy. A protocol that can advertise
+ * freeform tools (OpenAI Responses custom tools) sends the input as text under this
+ * grammar; every other protocol keeps the JSON function contract and ignores it.
+ */
+export const ToolInputFormat = Schema.Struct({
+  type: Schema.Literal("grammar"),
+  syntax: Schema.Literals(["lark", "regex"]),
+  definition: Schema.String,
+})
+export type ToolInputFormat = typeof ToolInputFormat.Type
+
 const toolDefinitionFields = {
   name: Schema.String,
   description: Schema.String,
   inputSchema: JsonSchema,
   outputSchema: Schema.optional(JsonSchema),
+  format: Schema.optional(ToolInputFormat),
   cache: Schema.optional(CacheHint),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   native: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),

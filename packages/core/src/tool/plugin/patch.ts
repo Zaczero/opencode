@@ -14,9 +14,18 @@ import { FileAccess } from "../../file-access.js"
 import { Patch } from "@opencode/util/patch"
 import { Permission } from "../../permission.js"
 import DESCRIPTION from "../patch.txt"
+import GRAMMAR from "../apply-patch-grammar.txt"
 import { fileDiff } from "./file-diff.js"
 
-export const name = "patch"
+/** The name GPT models are trained on; the TUI renders it as `patch`. */
+export const name = "apply_patch"
+
+/**
+ * The patch language as a Lark grammar. A provider with freeform tools (OpenAI Responses)
+ * advertises this tool as a custom tool under it and the model writes the patch as raw text;
+ * everywhere else the same tool is a JSON function taking `patchText`.
+ */
+export const format = { type: "grammar", syntax: "lark", definition: GRAMMAR } as const
 
 export const Input = Schema.Struct({
   patchText: Schema.String.annotate({
@@ -82,6 +91,7 @@ export const Plugin = {
           description: DESCRIPTION,
           input: Input,
           output: Output,
+          format,
           execute: (input, context) => {
             const applied: Array<typeof Applied.Type> = []
             const parsed = Patch.parse(input.patchText)
@@ -107,10 +117,10 @@ export const Plugin = {
               }
               if (!input.patchText) return yield* new ToolFailure({ message: "patchText is required" })
               const hunks = yield* Effect.fromResult(parsed).pipe(
-                Effect.mapError((error) => new ToolFailure({ message: `patch verification failed: ${error.message}` })),
+                Effect.mapError((error) => new ToolFailure({ message: `apply_patch verification failed: ${error.message}` })),
               )
               if (hunks.length === 0) {
-                return yield* new ToolFailure({ message: "patch rejected: empty patch" })
+                return yield* new ToolFailure({ message: "apply_patch rejected: empty patch" })
               }
               const prepared: Prepared[] = []
               const updates = new Map<string, string>()
@@ -143,7 +153,7 @@ export const Plugin = {
                       Effect.mapError(
                         (error) =>
                           new ToolFailure({
-                            message: `patch verification failed: Failed to delete ${target.resource}: ${errorMessage(error)}`,
+                            message: `apply_patch verification failed: Failed to delete ${target.resource}: ${errorMessage(error)}`,
                           }),
                       ),
                     )
@@ -158,7 +168,7 @@ export const Plugin = {
                         Effect.mapError(
                           (error) =>
                             new ToolFailure({
-                              message: `patch verification failed: Failed to read file to update ${target.absolute}: ${errorMessage(error)}`,
+                              message: `apply_patch verification failed: Failed to read file to update ${target.absolute}: ${errorMessage(error)}`,
                             }),
                         ),
                       )
@@ -167,7 +177,7 @@ export const Plugin = {
                   const before = Bom.split(original).text
                   const update = yield* Effect.try({
                     try: () => Patch.derive(hunk.path, hunk.chunks, original),
-                    catch: (error) => new ToolFailure({ message: `patch verification failed: ${errorMessage(error)}` }),
+                    catch: (error) => new ToolFailure({ message: `apply_patch verification failed: ${errorMessage(error)}` }),
                   })
                   const moveTarget = hunk.movePath ? yield* resolveTarget(hunk.movePath) : undefined
                   prepared.push({
@@ -302,7 +312,7 @@ export const Plugin = {
           delete event.tools.write
           return
         }
-        delete event.tools.patch
+        delete event.tools[name]
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)

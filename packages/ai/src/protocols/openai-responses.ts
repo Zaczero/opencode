@@ -139,6 +139,7 @@ const adapter = {
   id: ADAPTER,
   name: NAME,
   restoreHostedToolItem: (item: unknown) => (Schema.is(OpenAIResponsesHostedToolItem)(item) ? item : undefined),
+  freeformTools: true,
 } satisfies OpenResponses.ProviderAdapter
 
 // Only GPT-6 Astra accepts `configuration_update`, and never alongside automatic `context_management` compaction.
@@ -165,6 +166,9 @@ const lowerTool = Effect.fn("OpenAIResponses.lowerTool")(function* (tool: ToolDe
     if (Schema.is(OpenAIResponsesImageGenerationTool)(native)) return native
     return yield* ProviderShared.invalidRequest("OpenAI Responses image generation tool options are invalid")
   }
+  // https://platform.openai.com/docs/guides/function-calling#custom-tools
+  if (tool.format !== undefined && OpenResponses.freeformInputKey(tool) !== undefined)
+    return OpenResponses.lowerFreeformTool(tool, tool.format)
   return yield* OpenResponses.lowerTool(NAME, tool, inputSchema)
 })
 
@@ -196,7 +200,15 @@ const lowerToolChoice = (toolChoice: NonNullable<LLMRequest["toolChoice"]>, tool
     tool: (name) =>
       tools.some((tool) => tool.type === "tool" && tool.name === name && nativeImageTool(tool) !== undefined)
         ? ({ type: "image_generation" } as const)
-        : { type: "function" as const, name },
+        : {
+            type: tools.some(
+              (tool) =>
+                tool.type === "tool" && tool.name === name && OpenResponses.freeformInputKey(tool) !== undefined,
+            )
+              ? ("custom" as const)
+              : ("function" as const),
+            name,
+          },
   })
 
 const decodeBody = ProviderShared.validateWith(Schema.decodeUnknownEffect(OpenAIResponsesBody))
@@ -219,7 +231,7 @@ const fromRequest = Effect.fn("OpenAIResponses.fromRequest")(function* (request:
     tool_choice:
       request.tools.length === 0
         ? undefined
-        : (OpenResponses.allowedToolChoice(request) ??
+        : (OpenResponses.allowedToolChoice(request, adapter) ??
           (request.toolChoice ? yield* lowerToolChoice(request.toolChoice, request.tools) : undefined)),
   })
 })

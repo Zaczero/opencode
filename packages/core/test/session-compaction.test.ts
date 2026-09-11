@@ -28,6 +28,7 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Money } from "@opencode/schema/money"
 import { Skill } from "@opencode/schema/skill"
 import { Shell } from "@opencode/schema/shell"
+import { ShellResult } from "@opencode/core/shell/result"
 import { DateTime, Effect, Fiber, Layer, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -123,6 +124,81 @@ test("compaction truncation does not split surrogate pairs", () => {
 
   expect(SessionCompaction.truncateToolOutput(`${prefix}😀suffix`)).toBe(`${prefix}😀\n[truncated]`)
   expect(SessionCompaction.truncateToolOutput("😀".repeat(2_000))).toBe("😀".repeat(2_000))
+})
+
+const assistantMessage = (text: string, created: number) =>
+  Schema.decodeUnknownSync(SessionMessage.Assistant)({
+    id: SessionMessage.ID.create(),
+    type: "assistant",
+    agent: Agent.defaultID,
+    model: { id: "test-model", providerID: "test-provider" },
+    content: [{ type: "text", text }],
+    time: { created, completed: created },
+  })
+
+const userMessage = (text: string, created: number) =>
+  Schema.decodeUnknownSync(SessionMessage.User)({
+    id: SessionMessage.ID.create(),
+    type: "user",
+    text,
+    time: { created },
+  })
+
+test("compaction retains a budgeted suffix of complete messages instead of the whole turn", () => {
+  // Each assistant step is roughly 1,000 tokens; an autonomous turn holds five of them.
+  const steps = Array.from({ length: 5 }, (_, index) =>
+    assistantMessage(`step ${index} ${"a".repeat(4_000)}`, index + 1),
+  )
+  const messages = [userMessage("do the whole task", 0), ...steps]
+
+  const split = SessionCompaction.splitHistory(messages, 2_500)
+
+  expect(split?.messages).toEqual(messages.slice(0, 4))
+  expect(split?.recent).not.toContain("[User]")
+  expect(split?.recent.match(/\[Assistant\]: step (\d)/g)).toEqual(["[Assistant]: step 3", "[Assistant]: step 4"])
+})
+
+test("compaction retains only the latest exchange when everything fits the allowance", () => {
+  const messages = [
+    userMessage("first request", 0),
+    assistantMessage("first answer", 1),
+    userMessage("second request", 2),
+    assistantMessage("second answer", 3),
+  ]
+
+  const split = SessionCompaction.splitHistory(messages, 20_000)
+
+  expect(split?.messages).toEqual(messages.slice(0, 2))
+  expect(split?.recent).toBe("[User]: second request\n\n[Assistant]: second answer")
+})
+
+test("compaction truncates background shell notifications while keeping their status", () => {
+  const notification = ShellResult.notification({
+    shellID: "sh_job",
+    jobID: "job_1",
+    command: "cargo test",
+    state: "completed",
+    text: `${"line\n".repeat(2_000)}\n\nCommand exited with code 1.`,
+    output: { output: "line\n".repeat(2_000), truncated: false, exit: 1 },
+  })
+  const messages = [
+    userMessage("prepare the gate", 0),
+    assistantMessage("prepared", 1),
+    userMessage("run the gate", 2),
+    SessionMessage.Synthetic.make({
+      id: SessionMessage.ID.create(),
+      type: "synthetic",
+      text: notification.text,
+      metadata: notification.metadata,
+      time: { created: DateTime.makeUnsafe(3) },
+    }),
+  ]
+
+  const split = SessionCompaction.splitHistory(messages, 20_000)
+
+  expect(split?.recent).toBe(
+    `[User]: run the gate\n\n[Synthetic context]: <shell id="job_1" state="completed" command="cargo test">\n${"line\n".repeat(400)}\n[truncated]\n\nCommand exited with code 1.\n</shell>`,
+  )
 })
 
 test("compaction prompt requires the checkpoint headings in order", () => {

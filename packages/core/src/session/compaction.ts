@@ -31,6 +31,7 @@ import { SessionRunnerRetry } from "./runner/retry.js"
 import { SessionSchema } from "./schema.js"
 import { toSessionError } from "./to-session-error.js"
 import { Token } from "../util/token.js"
+import { ShellResult } from "../shell/result.js"
 import { SessionUsage } from "./usage.js"
 import { State } from "../state.js"
 import { toLLMMessages } from "./runner/to-llm-message.js"
@@ -310,7 +311,10 @@ const serializeRecentMessage = (message: SessionMessage.Info) => {
       })
       .join("\n")
   }
-  if (message.type === "synthetic") return `[Synthetic context]: ${message.text}`
+  if (message.type === "synthetic")
+    return `[Synthetic context]: ${
+      message.metadata?.source === "shell" ? serializeShellNotification(message.text, message.metadata) : message.text
+    }`
   if (message.type === "skill") return `[Skill activated: ${message.name}]\n${message.text}`
   if (message.type === "shell")
     return message.metadata?.background === true
@@ -319,7 +323,27 @@ const serializeRecentMessage = (message: SessionMessage.Info) => {
   return ""
 }
 
-const splitHistory = (messages: readonly SessionMessage.Info[], keepTokens: number) => {
+/**
+ * Shell completions are delivered as synthetics carrying the full captured output. Retain them
+ * like a foreground tool result: the wrapper identifies the job for a full re-read, the head of
+ * the output stays, and the exit status survives the cut.
+ */
+const serializeShellNotification = (text: string, metadata: Record<string, unknown>) => {
+  const open = text.indexOf("<shell ")
+  const start = open < 0 ? -1 : text.indexOf("\n", open)
+  const close = text.lastIndexOf("\n</shell>")
+  if (start < 0 || close < start) return truncateToolOutput(text)
+  const notice = ShellResult.notice({
+    ...(typeof metadata["exit"] === "number" ? { exit: metadata["exit"] } : {}),
+    ...(metadata["timeout"] === true ? { timeout: true } : {}),
+  })
+  const body = text.slice(start + 1, close)
+  const status = notice !== undefined && body.endsWith(`\n\n${notice}`) ? `\n\n${notice}` : ""
+  const output = body.slice(0, body.length - status.length)
+  return `${text.slice(0, start + 1)}${truncateToolOutput(output)}${status}${text.slice(close)}`
+}
+
+export const splitHistory = (messages: readonly SessionMessage.Info[], keepTokens: number) => {
   const tailStart = findTailStart(messages, keepTokens)
   if (tailStart === undefined) return
   return {
@@ -335,6 +359,10 @@ const findTailStart = (messages: readonly SessionMessage.Info[], keepTokens: num
   })
   if (conversation.length === 0) return undefined
 
+  // Every entry is a complete unit: an assistant message already carries its tool calls with
+  // their results, so any message boundary keeps them together. Widening to the last human
+  // prompt would retain a whole autonomous turn regardless of the allowance; the summary carries
+  // that prompt's outstanding requests instead.
   // Keep at least the newest entry, even if it exceeds the allowance.
   let total = 0
   let start = conversation.length
@@ -344,9 +372,6 @@ const findTailStart = (messages: readonly SessionMessage.Info[], keepTokens: num
     total = next
     start = index
   }
-
-  // Start at a user boundary so an assistant's tool calls and results stay together.
-  while (start > 0 && conversation[start].message.type !== "user") start--
   if (start > 0) return conversation[start].index
 
   // If everything fits, retain only the latest exchange to leave an older prefix to summarize.

@@ -221,7 +221,7 @@ it.effect("generates a title from the sole user message and renames the session"
       "x-opencode-session": sessionID,
       "x-opencode-client": "opencode",
     })
-    expect(requests[0]?.promptCacheKey).toBe(sessionID)
+    expect(requests[0]?.promptCacheKey).toBeUndefined()
     expect(requests[0]?.tools).toEqual([])
     expect(requests[0]?.system.map((part) => part.text)).toEqual(["You are a title generator."])
     expect(JSON.stringify(requests[0]?.messages)).toContain("Help me debug the failing build")

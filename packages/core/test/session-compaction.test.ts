@@ -75,6 +75,7 @@ const client = Layer.mock(LLMClient.Service)({
   generate: () => Effect.die("unused"),
 })
 const resolved = SessionRunnerModel.resolved(model, {
+  account: { identity: "compaction-account" },
   capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
   cost,
   limit: { context: 200_000, output: 32_000 },
@@ -235,6 +236,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
     })
     const input = (tokens: number, limit: { context: number; input?: number; output: number }) => {
       const resolved = SessionRunnerModel.resolved(model, {
+        account: { identity: "compaction-account" },
         capabilities: { tools: true, input: ["text", "image", "pdf"], output: ["text"] },
         cost: [],
         limit,
@@ -452,7 +454,7 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
     ])
 
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.promptCacheKey).toBe(sessionID)
+    expect(requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
     expect(requests[0]?.http?.headers).toEqual({
       "x-session-affinity": sessionID,
       "X-Session-Id": sessionID,
@@ -468,7 +470,13 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
     expect(JSON.stringify(requests[0]?.messages)).toContain("User shell pwd completed: /project")
     expect(JSON.stringify(requests[0]?.messages)).not.toContain("display-only-output")
     expect(yield* store.context(sessionID)).toMatchObject([
-      { type: "compaction", reason: "manual", summary: "## Objective\n- manual summary", recent: "" },
+      {
+        type: "compaction",
+        reason: "manual",
+        summary: "## Objective\n- manual summary",
+        recent: "",
+        account: resolved.account?.scope,
+      },
     ])
     expect(yield* store.get(sessionID)).toMatchObject({
       cost: 0.0000233,
@@ -682,7 +690,17 @@ it.effect("forked session compaction reuses the fork root prompt cache key", () 
     ).toEqual({ status: "completed" })
 
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.promptCacheKey).toBe(rootID)
+    expect(requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    const root = yield* insertSession(rootID)
+    yield* compaction.compactManual({
+      resolveModel: () => Effect.succeed(resolved),
+      session: root,
+      resolveContext: () => Effect.succeed(loaded(root, messages)),
+      prepare: modelRequests.prepare,
+      messages,
+      inputID: SessionMessage.ID.make("msg_root_compaction"),
+    })
+    expect(requests[1]?.promptCacheKey).toBe(requests[0]?.promptCacheKey)
   }),
 )
 

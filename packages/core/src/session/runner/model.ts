@@ -6,6 +6,7 @@ import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
 import { Context, Effect, Layer, Schema } from "effect"
 import { ModelResolver } from "../../model-resolver.js"
+import { ModelAccount } from "../../model-account.js"
 import { SessionSchema } from "../schema.js"
 
 export class ModelNotSelectedError extends Schema.TaggedError<ModelNotSelectedError>()(
@@ -55,11 +56,16 @@ export const resolved = (
   options: {
     readonly capabilities: Model.Capabilities
     readonly variant?: Model.VariantID
+    /** Stable account identity supplied by the embedding runtime. */
+    readonly account?: Pick<NonNullable<Resolved["account"]>, "identity">
     readonly cost: Model.Info["cost"]
     readonly limit: Model.Info["limit"]
   },
 ): Resolved => ({
   model,
+  ...(options.account
+    ? { account: { identity: options.account.identity, scope: ModelAccount.scope(options.account.identity, model) } }
+    : {}),
   ref: Model.Ref.make({
     id: Model.ID.make(model.id),
     providerID: Provider.ID.make(model.provider),

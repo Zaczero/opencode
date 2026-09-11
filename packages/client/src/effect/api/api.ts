@@ -691,6 +691,7 @@ export type SessionLogOutput =
             readonly assistantMessageID: SessionMessage.ID
             readonly agent: Agent.ID
             readonly model: Model.Ref
+            readonly account?: string | undefined
             readonly snapshot?: (string & Brand.Brand<"Snapshot.ID">) | undefined
           }
         }
@@ -970,6 +971,7 @@ export type SessionLogOutput =
             readonly sessionID: Session.ID
             readonly reason: "auto" | "manual"
             readonly model?: Model.Ref | undefined
+            readonly account?: string | undefined
             readonly providerState?: SessionMessage.ProviderState | undefined
             readonly text: string
             readonly recent: string

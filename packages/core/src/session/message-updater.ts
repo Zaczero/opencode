@@ -200,6 +200,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
               produce(existing, (draft) => {
                 draft.agent = event.data.agent
                 draft.model = castDraft(event.data.model)
+                draft.account = event.data.account
                 draft.retry = undefined
                 draft.error = undefined
                 draft.finish = undefined
@@ -227,6 +228,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
               type: "assistant",
               agent: event.data.agent,
               model: event.data.model,
+              account: event.data.account,
               metadata: event.metadata,
               time: { created },
               content: [],
@@ -411,6 +413,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
               status: "completed",
               reason: event.data.reason,
               model: event.data.model,
+              account: event.data.account,
               providerState: event.data.providerState,
               summary: event.data.text,
               recent: event.data.recent,
@@ -425,6 +428,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
               metadata: event.metadata,
               reason: event.data.reason,
               model: event.data.model,
+              account: event.data.account,
               providerState: event.data.providerState,
               summary: event.data.text,
               recent: event.data.recent,

@@ -260,10 +260,8 @@ export const OpenAIPlugin = define({
       }
       if (!chatgpt) return
       item.provider.settings = Provider.mergeOverlay(item.provider.settings, { baseURL: codexBaseURL })
-      const account = chatgpt.metadata?.accountID
       item.provider.headers = Provider.mergeHeaders(item.provider.headers, {
         originator: "opencode",
-        ...(typeof account === "string" ? { "chatgpt-account-id": account } : {}),
       })
       for (const model of item.models.values()) {
         // ChatGPT-plan tokens only authorize codex-eligible models, and the
@@ -294,7 +292,13 @@ export const OpenAIPlugin = define({
       "model.request",
       (evt) =>
         Effect.sync(() => {
-          if (!chatgpt) return
+          if (
+            evt.credential?.type !== "oauth" ||
+            (evt.credential.methodID !== browserMethodID && evt.credential.methodID !== headlessMethodID)
+          ) {
+            if (evt.baseURL === codexBaseURL) evt.baseURL = "https://api.openai.com/v1"
+            return
+          }
           if (evt.baseURL && URL.canParse(evt.baseURL) && new URL(evt.baseURL).origin === "https://api.openai.com")
             evt.baseURL = codexBaseURL
           evt.headers.originator = "opencode"

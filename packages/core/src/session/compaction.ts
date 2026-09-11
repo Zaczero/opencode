@@ -617,6 +617,7 @@ export const layer = Layer.effect(
         sessionID: context.session.id,
         reason: input.reason,
         model: selected.ref,
+        account: prepared.account,
         providerState,
         text: summary,
         recent: history.recent,

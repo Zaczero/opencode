@@ -19,6 +19,7 @@ type Input = {
   readonly sessionID: SessionSchema.ID
   readonly agent: Agent.ID
   readonly model: Model.Ref
+  readonly account?: string
   readonly providerMetadataKey: string
   readonly snapshot?: Snapshot.ID
   readonly assistantMessageID: SessionMessage.ID
@@ -112,6 +113,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       sessionID: input.sessionID,
       agent: input.agent,
       model: input.model,
+      account: input.account,
       assistantMessageID,
       snapshot: input.snapshot,
     })

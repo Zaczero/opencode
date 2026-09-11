@@ -44,11 +44,15 @@ function required<T>(value: T | undefined): T {
 
 const request = Effect.fn(function* (providerID: Provider.ID, baseURL: string) {
   const hooks = yield* PluginHooks.Service
+  const integrations = yield* Integration.Service
+  const connection = yield* integrations.connection.active(Integration.ID.make(providerID))
+  const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
   const event = yield* hooks.trigger("session", "model.request", {
     sessionID: Session.ID.make("ses_test"),
     agent: Agent.ID.make("build"),
     model: Model.Ref.make({ providerID, id: Model.ID.make("gpt-5.5") }),
     kind: "primary",
+    credential,
     baseURL,
     headers: {},
   })
@@ -145,7 +149,8 @@ describe("OpenAIPlugin", () => {
       const provider = required(yield* catalog.provider.get(Provider.ID.openai))
       expect(provider.package).toBe(Provider.aisdk("@ai-sdk/openai"))
       expect(provider.settings).toMatchObject({ baseURL: "https://chatgpt.com/backend-api/codex" })
-      expect(provider.headers).toMatchObject({ originator: "opencode", "chatgpt-account-id": "acct_123" })
+      expect(provider.headers).toMatchObject({ originator: "opencode" })
+      expect(provider.headers).not.toHaveProperty("chatgpt-account-id")
       expect(direct.baseURL).toBe("https://chatgpt.com/backend-api/codex")
       expect(direct.headers).toMatchObject({ originator: "opencode", "session-id": "ses_test" })
       expect(direct.hasHttpHooks).toBe(false)
@@ -154,7 +159,8 @@ describe("OpenAIPlugin", () => {
       expect(proxy.headers).toMatchObject({ originator: "opencode", "session-id": "ses_test" })
       const eligible = required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-5.5")))
       expect(eligible.package).toBe(Provider.aisdk("@ai-sdk/openai"))
-      expect(eligible.headers).toMatchObject({ originator: "opencode", "chatgpt-account-id": "acct_123" })
+      expect(eligible.headers).toMatchObject({ originator: "opencode" })
+      expect(eligible.headers).not.toHaveProperty("chatgpt-account-id")
       expect(eligible.cost).toEqual([])
       expect(eligible.limit).toEqual({ context: 400_000, input: 272_000, output: 128_000 })
       expect(eligible.enabled).toBe(true)
@@ -173,7 +179,9 @@ describe("OpenAIPlugin", () => {
       expect(required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-6-astra"))).enabled).toBe(true)
       expect(required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-5.10"))).enabled).toBe(true)
       expect(required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-5"))).enabled).toBe(false)
-      expect(required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-5.04-astra"))).enabled).toBe(false)
+      expect(required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-5.04-astra"))).enabled).toBe(
+        false,
+      )
       expect(required(yield* catalog.model.get(Provider.ID.openai, Model.ID.make("gpt-4.99"))).enabled).toBe(false)
     }),
   )

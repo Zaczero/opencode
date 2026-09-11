@@ -62,6 +62,7 @@ export interface Settings extends ProviderPackage.Settings {
   readonly baseURL?: string
   readonly organization?: string
   readonly project?: string
+  readonly accountID?: string
   readonly queryParams?: Readonly<Record<string, string>>
   readonly providerOptions?: OpenAIProviderOptionsInput
 }
@@ -118,6 +119,7 @@ export const provider = configure()
 
 const config = (settings: Settings): Config => {
   const headers = {
+    ...(settings.accountID === undefined ? {} : { "chatgpt-account-id": settings.accountID }),
     ...(settings.organization === undefined ? {} : { "OpenAI-Organization": settings.organization }),
     ...(settings.project === undefined ? {} : { "OpenAI-Project": settings.project }),
     ...settings.headers,

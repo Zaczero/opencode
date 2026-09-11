@@ -9,6 +9,8 @@ import type { Content } from "@opencode-ai/schema/tool"
 import { Cause, Config, Context, Effect, Layer, Result, Stream } from "effect"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
+import { Hash } from "@opencode-ai/util/hash"
+import { ModelAccount } from "../model-account.js"
 import { App } from "../app.js"
 import { Permission } from "../permission.js"
 import { PluginHooks } from "../plugin/hooks.js"
@@ -48,6 +50,7 @@ const declineDefect = (cause: Cause.Cause<Tool.Error>) => {
 
 export interface Prepared {
   readonly request: LLMRequest
+  readonly account?: string
   readonly options: StreamOptions
   readonly retry: (event: PluginHooks.Domains["session"]["retry"]) => Effect.Effect<void>
   /**
@@ -103,7 +106,7 @@ export const baseTranscript = (input: {
     ]
       .filter((part) => part.length > 0)
       .map(SystemPart.make),
-    messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey),
+    messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey, input.model.account?.scope),
   }
 }
 
@@ -205,6 +208,7 @@ interface HookScope {
   readonly agent: Agent.ID
   readonly model: Model.Ref
   readonly kind: SessionRequestKind
+  readonly credential?: SessionRunnerModel.Resolved["credential"]
 }
 
 const sessionHeaders = (session: Pick<SessionSchema.Info, "id" | "parentID" | "projectID">, app: App.Info) => ({
@@ -217,8 +221,8 @@ const sessionHeaders = (session: Pick<SessionSchema.Info, "id" | "parentID" | "p
   "x-opencode-client": app.name,
 })
 
-const promptCacheKey = (sessionID: SessionSchema.ID) =>
-  /^ses_[0-9a-f]{64}$/.test(sessionID) ? sessionID.slice(4) : sessionID
+const promptCacheKey = (sessionID: SessionSchema.ID, account: string | undefined) =>
+  account === undefined ? undefined : Hash.sha256(JSON.stringify([sessionID, account]))
 
 // Lets session.model.request hooks rewrite the base URL and headers before dispatch.
 const applyModelHooks = (hooks: PluginHooks.Interface, scope: HookScope, request: LLMRequest) =>
@@ -246,13 +250,15 @@ const applyModelHooks = (hooks: PluginHooks.Interface, scope: HookScope, request
 // Exposes each outbound HTTP exchange to session.http.request/response hooks
 // through web-standard Request/Response values.
 const httpMiddleware =
-  (hooks: PluginHooks.Interface, scope: HookScope): NonNullable<StreamOptions["http"]> =>
+  (hooks: PluginHooks.Interface, scope: HookScope, requestHooks: boolean): NonNullable<StreamOptions["http"]> =>
   (request, handler) =>
     Effect.gen(function* () {
-      const before = yield* hooks.trigger("session", "http.request", {
+      const event = {
         ...scope,
         request: yield* HttpClientRequest.toWeb(request),
-      })
+      }
+      // A newly registered auth-changing hook must not enter an already account-bound request.
+      const before = requestHooks ? yield* hooks.trigger("session", "http.request", event) : event
       let sent = HttpClientRequest.fromWeb(before.request)
       if (before.request.body)
         sent = HttpClientRequest.bodyUint8Array(
@@ -340,16 +346,20 @@ export const layer = Layer.effect(
           return [[name, { ...tool, description: definition.description, inputSchema: definition.input }] as const]
         }),
       )
-      const request = yield* applyModelHooks(
+      const hookedRequest = yield* applyModelHooks(
         hooks,
-        { sessionID: session.id, agent: input.scope.agentID, model: resolved.ref, kind: input.kind },
+        {
+          sessionID: session.id,
+          agent: input.scope.agentID,
+          model: resolved.ref,
+          kind: input.kind,
+          credential: resolved.credential,
+        },
         LLM.request({
           model,
           http: {
             headers: sessionHeaders(session, app),
           },
-          // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
-          promptCacheKey: promptCacheKey(session.fork?.sessionID ?? session.id),
           system: context.system,
           messages: boundImages(unsupportedParts(context.messages, resolved.capabilities)),
           tools: Array.from(hooked, ([name, tool]) => ({ ...tool, name })),
@@ -358,9 +368,28 @@ export const layer = Layer.effect(
           providerOptions: Object.keys(context.providerOptions).length === 0 ? undefined : context.providerOptions,
         }),
       )
+      const hasHttpRequestHooks = yield* hooks.has("session", "http.request", resolved.ref.providerID)
       const hasHttpHooks =
-        (yield* hooks.has("session", "http.request", resolved.ref.providerID)) ||
-        (yield* hooks.has("session", "http.response", resolved.ref.providerID))
+        hasHttpRequestHooks || (yield* hooks.has("session", "http.response", resolved.ref.providerID))
+      // Late HTTP hooks can replace credentials after history lowering. Without their
+      // final account identity, neither opaque history nor a shared cache key is reusable.
+      const account = hasHttpRequestHooks
+        ? undefined
+        : ModelAccount.scope(resolved.account?.identity, hookedRequest.model, hookedRequest.http?.headers)
+      const request = LLMRequest.update(hookedRequest, {
+        promptCacheKey: promptCacheKey(session.fork?.sessionID ?? session.id, account),
+        messages:
+          account !== undefined && account === resolved.account?.scope
+            ? hookedRequest.messages
+            : hookedRequest.messages.map((message) =>
+                Message.make({
+                  ...message,
+                  content: message.content
+                    .filter((part) => part.type !== "reasoning" || part.text.length > 0)
+                    .map((part) => ({ ...part, providerMetadata: undefined })),
+                }),
+              ),
+      })
       const webSocket =
         resolved.capabilities.responsesWebsockets === true
           ? yield* Config.boolean(responsesWebSocketFlag(resolved.ref.providerID)).pipe(
@@ -369,12 +398,16 @@ export const layer = Layer.effect(
             )
           : false
       const http = hasHttpHooks
-        ? httpMiddleware(hooks, {
-            sessionID: session.id,
-            agent: input.scope.agentID,
-            model: resolved.ref,
-            kind: input.kind,
-          })
+        ? httpMiddleware(
+            hooks,
+            {
+              sessionID: session.id,
+              agent: input.scope.agentID,
+              model: resolved.ref,
+              kind: input.kind,
+            },
+            hasHttpRequestHooks,
+          )
         : undefined
       const options: StreamOptions = {
         ...(http ? { http } : {}),
@@ -389,6 +422,7 @@ export const layer = Layer.effect(
       const retry: Prepared["retry"] = (event) => hooks.trigger("session", "retry", event).pipe(Effect.asVoid)
       return {
         request,
+        account,
         options,
         retry,
         executeTool,

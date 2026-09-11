@@ -20,6 +20,46 @@ const model = Model.Ref.make({ id: Model.ID.make("model"), providerID: Provider.
 const build = Agent.defaultID
 
 describe("toLLMMessages", () => {
+  for (const account of ["other-account", undefined])
+    test(`drops every provider-state field when the destination account is ${account ?? "unknown"}`, () => {
+      const original = SessionMessage.Assistant.make({
+        id: id("account-scoped"),
+        type: "assistant",
+        agent: build,
+        model,
+        account: "source-account",
+        providerState: { responseId: "opaque-response" },
+        content: [
+          { type: "text", text: "Readable answer", state: { signature: "opaque-text" } },
+          { type: "reasoning", text: "Readable reasoning", state: { encrypted: "opaque-reasoning" } },
+          { type: "reasoning", text: "", state: { encrypted: "opaque-only" } },
+          {
+            type: "tool",
+            id: "call-hosted",
+            name: "web_search",
+            executed: true,
+            providerState: { signature: "opaque-call" },
+            providerResultState: { signature: "opaque-result" },
+            state: {
+              status: "completed",
+              input: { query: "Topic" },
+              content: [{ type: "text", text: "Readable result" }],
+            },
+            time: { created, completed: created },
+          },
+        ],
+        time: { created, completed: created },
+      })
+      const messages = toLLMMessages([original], model, undefined, account)
+      expect(messages[0].content.filter((part) => part.type === "reasoning")).toEqual([
+        { type: "reasoning", text: "Readable reasoning" },
+      ])
+      expect(JSON.stringify(messages)).not.toContain("opaque-")
+      expect(JSON.stringify(messages)).toContain("Readable answer")
+      expect(JSON.stringify(messages)).toContain("Readable result")
+      expect(original.content[0]).toMatchObject({ state: { signature: "opaque-text" } })
+    })
+
   test("background user shells enter model context only through their completion notification", () => {
     const shell = SessionMessage.Shell.make({
       id: id("background-shell"),
@@ -38,7 +78,7 @@ describe("toLLMMessages", () => {
       time: { created },
     })
 
-    expect(toLLMMessages([shell], model)).toEqual([])
+    expect(toLLMMessages([shell], model, undefined, "test-account")).toEqual([])
     const completed = SessionMessage.Shell.make({
       ...shell,
       status: "exited",
@@ -46,8 +86,8 @@ describe("toLLMMessages", () => {
       output: { output: "/project", cursor: 8, size: 8, truncated: false },
       time: { created, completed: created },
     })
-    expect(toLLMMessages([completed], model)).toEqual([])
-    expect(toLLMMessages([completed, notification], model)).toEqual([
+    expect(toLLMMessages([completed], model, undefined, "test-account")).toEqual([])
+    expect(toLLMMessages([completed, notification], model, undefined, "test-account")).toEqual([
       Message.make({ id: notification.id, role: "user", content: notification.text }),
     ])
   })
@@ -55,6 +95,7 @@ describe("toLLMMessages", () => {
   test("omits empty assistant turns", () => {
     const assistant = (value: string, content: SessionMessage.Assistant["content"]) =>
       SessionMessage.Assistant.make({
+        account: "test-account",
         id: id(value),
         type: "assistant",
         agent: build,
@@ -77,6 +118,8 @@ describe("toLLMMessages", () => {
         ]),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages.map((message) => message.id)).toEqual([id("text"), id("reasoning")])
@@ -153,6 +196,8 @@ describe("toLLMMessages", () => {
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages.map((message) => message.role)).toEqual(["user", "system", "user", "user", "user", "user"])
@@ -220,6 +265,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages).toHaveLength(1)
@@ -259,6 +306,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages).toEqual([
@@ -293,6 +342,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]).toMatchObject({
@@ -320,6 +371,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toMatchObject([
@@ -350,6 +403,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages).toHaveLength(1)
@@ -393,6 +448,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages).toHaveLength(1)
@@ -423,6 +480,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages).toHaveLength(1)
@@ -452,6 +511,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -482,6 +543,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -517,6 +580,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -555,6 +620,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -599,6 +666,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -655,6 +724,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content.filter((part) => part.type === "media")).toHaveLength(4)
@@ -664,6 +735,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant"),
           type: "assistant",
           agent: build,
@@ -744,6 +816,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages.map((message) => message.role)).toEqual(["assistant", "tool"])
@@ -814,6 +888,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-openai-reasoning"),
           type: "assistant",
           agent: build,
@@ -829,6 +904,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -845,6 +922,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-opencode-reasoning"),
           type: "assistant",
           agent: build,
@@ -861,6 +939,7 @@ Recent work
       ],
       opencode,
       "anthropic",
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -872,6 +951,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-failed"),
           type: "assistant",
           agent: build,
@@ -917,6 +997,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -970,6 +1052,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-old-model"),
           type: "assistant",
           agent: build,
@@ -1013,6 +1096,8 @@ Recent work
         }),
       ],
       model,
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -1064,6 +1149,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-alias"),
           type: "assistant",
           agent: build,
@@ -1079,6 +1165,8 @@ Recent work
         }),
       ],
       Model.Ref.make({ id: Model.ID.make("fast"), providerID: Provider.ID.make("provider") }),
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -1094,6 +1182,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-phase"),
           type: "assistant",
           agent: build,
@@ -1110,6 +1199,8 @@ Recent work
         }),
       ],
       Model.Ref.make({ id: Model.ID.make("new"), providerID: Provider.ID.make("provider") }),
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([
@@ -1125,6 +1216,7 @@ Recent work
     const messages = toLLMMessages(
       [
         SessionMessage.Assistant.make({
+          account: "test-account",
           id: id("assistant-phase"),
           type: "assistant",
           agent: build,
@@ -1140,6 +1232,8 @@ Recent work
         }),
       ],
       Model.Ref.make({ id: Model.ID.make("same"), providerID: Provider.ID.make("provider") }),
+      undefined,
+      "test-account",
     )
 
     expect(messages[0]?.content).toEqual([

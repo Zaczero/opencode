@@ -19,6 +19,7 @@ import { AnthropicMessages, OpenAIResponses } from "@opencode-ai/ai/protocols"
 import { compileRequest } from "@opencode-ai/ai/route/client"
 import { TestLLM } from "@opencode-ai/ai/testing"
 import { Catalog } from "@opencode-ai/core/catalog"
+import { ModelAccount } from "@opencode-ai/core/model-account"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeLocationNode } from "@opencode-ai/util/effect/app-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -200,6 +201,7 @@ const makeRunnerState = () => {
     }).pipe(Effect.andThen(Deferred.succeed(barrier.release, undefined)), Effect.asVoid)
   return {
     currentModel: model,
+    currentAccount: "runner-account",
     modelResolveHook: Effect.void,
     systemBaseline: "Initial context",
     systemRemoved: false,
@@ -315,6 +317,7 @@ const layer = Layer.unwrap(
           Effect.map(() => {
             const selected = session.model?.id === "replacement" ? replacementModel : state.currentModel
             return SessionRunnerModel.resolved(selected, {
+              account: { identity: state.currentAccount },
               capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
               cost: [],
               limit: modelLimits.get(String(selected.id)) ?? defaultModelLimit,
@@ -4128,6 +4131,7 @@ describe("SessionRunnerLLM", () => {
     yield* s.bus.publish(SessionEvent.Step.Started, {
       sessionID,
       assistantMessageID,
+      account: ModelAccount.scope("runner-account", s.currentModel),
       agent: Agent.ID.make("build"),
       model: { id: ID.make("fake-model"), providerID: Provider.ID.make("fake") },
     })
@@ -4288,7 +4292,8 @@ describe("SessionRunnerLLM", () => {
     yield* stream.started
 
     expect(s.requests).toHaveLength(2)
-    expect(s.requests.map((request) => request.promptCacheKey)).toEqual([sessionID, otherSessionID])
+    expect(s.requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(s.requests[0]?.promptCacheKey).not.toBe(s.requests[1]?.promptCacheKey)
     yield* stream.release
     yield* Fiber.join(first)
     yield* Fiber.join(second)
@@ -4314,7 +4319,6 @@ describe("SessionRunnerLLM", () => {
     yield* s.session.resume(otherLongSessionID)
 
     const keys = s.requests.map((request) => request.promptCacheKey)
-    expect(keys).toEqual([longSessionID.slice(4), otherLongSessionID.slice(4)])
     expect(keys.every((key) => typeof key === "string" && key.length === 64)).toBe(true)
     expect(keys[0]).not.toBe(keys[1])
   })
@@ -5013,6 +5017,25 @@ describe("SessionRunnerLLM", () => {
     expect(yield* s.context).toMatchObject([
       { type: "user" },
       Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
+    ])
+  })
+
+  scenario("rebinds a pre-output retry to the newly selected account", function* (s) {
+    yield* s.admit("Retry after switching accounts")
+    yield* s.llm.push(Stream.fail(rateLimited(5_000)))
+    yield* s.llm.push(TestLLM.text("Recovered", "account-retry-success"))
+    const scheduled = yield* subscribeRetries(s)
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* Queue.take(scheduled)
+    s.currentAccount = "second-account"
+    yield* TestClock.adjust("5000 millis")
+    yield* Fiber.join(run)
+    expect(s.requests).toHaveLength(2)
+    expect(s.requests[0]?.promptCacheKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(s.requests[1]?.promptCacheKey).not.toBe(s.requests[0]?.promptCacheKey)
+    expect(yield* s.context).toMatchObject([
+      { type: "user" },
+      { type: "assistant", account: ModelAccount.scope("second-account", s.currentModel) },
     ])
   })
 

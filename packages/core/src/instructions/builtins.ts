@@ -38,8 +38,7 @@ const layer = Layer.effect(
                 ].join("\n"),
               ),
               render: {
-                initial: (environment) =>
-                  ["Here is some useful information about the environment you are running in:", environment].join("\n"),
+                initial: (environment) => ["# Execution environment", environment].join("\n"),
                 changed: (_previous, environment) =>
                   ["The environment you are running in is now:", environment].join("\n"),
               },

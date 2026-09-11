@@ -44,7 +44,7 @@ describe("InstructionBuiltIns", () => {
 
       expect(initialized.text).toBe(
         [
-          "Here is some useful information about the environment you are running in:",
+          "# Execution environment",
           "<env>",
           `  Current conversation session ID: ${sessionID}`,
           `  Working directory: ${directory}`,

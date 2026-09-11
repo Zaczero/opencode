@@ -192,6 +192,10 @@ const table = sqliteTable("session", {
 - In `packages/core`, run `bun run test [files]`. Its `script/test.ts` wrapper isolates
   `HOME`, XDG roots, and credentials. Direct `bun test` loads the developer's plugins;
   the host's shell policy can then reject test commands before they start.
+- TUI tests also need isolated `HOME` and XDG roots when invoked locally. A real
+  global TUI plugin changes the plugin picker and can make lifecycle assertions
+  select the wrong entry. Run `bun test` with an empty environment plus `PATH`,
+  temporary `HOME`/XDG roots, `TERM=xterm-256color`, and `TZ=UTC`.
 
 ## Checks
 

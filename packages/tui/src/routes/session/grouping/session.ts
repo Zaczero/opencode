@@ -14,6 +14,7 @@ export type CacheUsage = {
 export type SessionEntry =
   | { type: "message"; messageID: string }
   | { type: "compaction-queued"; inboxID: string }
+  | { type: "notice-queued"; inboxID: string; description: string }
   | { type: "part"; ref: PartRef }
   | { type: "assistant-footer"; messageID: string }
   | { type: "turn-usage"; messageIDs: string[]; previousCache?: CacheUsage }

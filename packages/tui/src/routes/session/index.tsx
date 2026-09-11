@@ -1442,6 +1442,9 @@ function SessionRowView(props: SessionRowViewProps) {
         <Match when={props.row.type === "compaction-queued"}>
           <CompactionQueued />
         </Match>
+        <Match when={props.row.type === "notice-queued" ? props.row : undefined}>
+          {(row) => <NoticeQueued description={row().description} />}
+        </Match>
         <Match when={props.row.type === "part" ? props.row : undefined}>
           {(row) => <SessionPartView partRef={row().ref} message={props.message} />}
         </Match>
@@ -2160,6 +2163,15 @@ function CompactionQueued() {
       </box>
       <box border={["top"]} borderColor={theme.border.base} flexGrow={1} />
     </box>
+  )
+}
+
+export function NoticeQueued(props: { description: string }) {
+  const theme = useTheme()
+  return (
+    <InlineToolRow icon="◇" color={theme.text.muted} pending="Notice" complete={true}>
+      {`${props.description} · queued`}
+    </InlineToolRow>
   )
 }
 

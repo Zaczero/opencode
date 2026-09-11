@@ -201,6 +201,43 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     return admitted
   })
 
+  /** Replacement and withdrawal commit together under the same lock used by promotion. */
+  const admitSynthetic = Effect.fn("SessionInbox.admitSynthetic")(function* (input: {
+    readonly id: SessionMessage.ID
+    readonly sessionID: SessionSchema.ID
+    readonly payload: SyntheticPayload
+    readonly delivery: Delivery
+  }) {
+    const request = {
+      id: input.id,
+      sessionID: input.sessionID,
+      item: { type: "synthetic", payload: input.payload, delivery: input.delivery } satisfies Item,
+    }
+    if (input.payload.slot === undefined) return yield* admit(request)
+    return yield* serialized(
+      input.sessionID,
+      Effect.gen(function* () {
+        const existing = yield* reconcile({ ...input, type: "synthetic" })
+        if (existing) return existing
+        const superseded = (yield* list(db, input.sessionID)).filter(
+          (entry) => entry.type === "synthetic" && entry.payload.slot === input.payload.slot,
+        )
+        const [event] = yield* bus.publishAll([
+          [SessionEvent.InboxEnqueued, { inboxID: input.id, sessionID: input.sessionID, item: request.item }],
+          ...superseded.map(
+            (entry) => [SessionEvent.InboxCancelled, { sessionID: input.sessionID, inboxID: entry.id }] as const,
+          ),
+        ])
+        return Synthetic.make({
+          id: input.id,
+          sessionID: input.sessionID,
+          time: { created: DateTime.makeUnsafe(event.created) },
+          ...request.item,
+        })
+      }),
+    )
+  })
+
   const admitCompaction = Effect.fn("SessionInbox.admitCompaction")(function* (input: {
     readonly id: SessionMessage.ID
     readonly sessionID: SessionSchema.ID
@@ -263,6 +300,7 @@ export const make = Effect.fn("SessionInbox.make")(function* () {
     list: (sessionID: SessionSchema.ID) => list(db, sessionID),
     reconcile,
     admit,
+    admitSynthetic,
     admitCompaction,
     cancel,
     steer,
@@ -477,16 +515,30 @@ const publish = Effect.fn("SessionInbox.publish")(function* (
   bus: Bus.Interface,
   sessionID: SessionSchema.ID,
   rows: ReadonlyArray<typeof SessionInboxTable.$inferSelect>,
+  beforeSyntheticDelivery?: (input: Synthetic) => Effect.Effect<{
+    readonly replacement?: SyntheticPayload
+    readonly discard?: boolean
+  }>,
 ) {
+  let promoted = 0
   yield* Effect.forEach(
     rows,
-    (row) => {
+    (row) => Effect.gen(function* () {
       const entry = fromRow(row)
-      if (entry.type === "compaction") return Effect.die(new LifecycleConflict({ id: entry.id }))
-      return bus
+      if (entry.type === "compaction") return yield* Effect.die(new LifecycleConflict({ id: entry.id }))
+      const decision =
+        entry.type === "synthetic" && entry.delivery === "queue" && beforeSyntheticDelivery
+          ? yield* beforeSyntheticDelivery(entry)
+          : undefined
+      if (decision?.discard) {
+        yield* bus.publish(SessionEvent.InboxCancelled, { sessionID, inboxID: entry.id })
+        return
+      }
+      yield* bus
         .publish(SessionEvent.InboxDelivered, {
           sessionID,
           inboxID: entry.id,
+          ...(decision?.replacement ? { synthetic: decision.replacement } : {}),
         })
         .pipe(
           Effect.catchDefect((defect) =>
@@ -498,10 +550,11 @@ const publish = Effect.fn("SessionInbox.publish")(function* (
               : Effect.die(defect),
           ),
         )
-    },
+      promoted++
+    }),
     { discard: true },
   )
-  return rows.length
+  return promoted
 })
 
 /**
@@ -515,6 +568,10 @@ export const promote = Effect.fn("SessionInbox.promote")(function* (
   bus: Bus.Interface,
   sessionID: SessionSchema.ID,
   scope: Promotable,
+  beforeSyntheticDelivery?: (input: Synthetic) => Effect.Effect<{
+    readonly replacement?: SyntheticPayload
+    readonly discard?: boolean
+  }>,
 ) {
   return yield* serialized(
     sessionID,
@@ -526,23 +583,26 @@ export const promote = Effect.fn("SessionInbox.promote")(function* (
         return yield* publish(db, bus, sessionID, control === -1 ? steers : steers.slice(0, control))
       }
 
-      const queued = yield* db
-        .select()
-        .from(SessionInboxTable)
-        .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "queue")))
-        .orderBy(asc(SessionInboxTable.enqueued_seq))
-        .limit(1)
-        .get()
-        .pipe(Effect.orDie)
-      if (!queued) return 0
-      if (queued.type === "compaction" || queued.type === "move") return undefined
-      const promoted = yield* publish(db, bus, sessionID, [queued])
-      const arrivedSteers = yield* pendingSteers(db, sessionID)
-      const control = arrivedSteers.findIndex((row) => row.type === "compaction" || row.type === "move")
-      return (
-        promoted +
-        (yield* publish(db, bus, sessionID, control === -1 ? arrivedSteers : arrivedSteers.slice(0, control)))
-      )
+      while (true) {
+        const queued = yield* db
+          .select()
+          .from(SessionInboxTable)
+          .where(and(eq(SessionInboxTable.session_id, sessionID), eq(SessionInboxTable.delivery, "queue")))
+          .orderBy(asc(SessionInboxTable.enqueued_seq))
+          .limit(1)
+          .get()
+          .pipe(Effect.orDie)
+        if (!queued) return 0
+        if (queued.type === "compaction" || queued.type === "move") return undefined
+        const promoted = yield* publish(db, bus, sessionID, [queued], beforeSyntheticDelivery)
+        if (promoted === 0) continue
+        const arrivedSteers = yield* pendingSteers(db, sessionID)
+        const control = arrivedSteers.findIndex((row) => row.type === "compaction" || row.type === "move")
+        return (
+          promoted +
+          (yield* publish(db, bus, sessionID, control === -1 ? arrivedSteers : arrivedSteers.slice(0, control)))
+        )
+      }
     }),
   )
 })

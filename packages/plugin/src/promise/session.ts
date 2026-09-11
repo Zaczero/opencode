@@ -147,6 +147,15 @@ export interface SessionBeforeComplete {
   }
 }
 
+/** Inspect a queued synthetic at delivery; replace its visible content or discard it. */
+export interface SessionBeforeSyntheticDelivery {
+  readonly sessionID: Session.ID
+  readonly inboxID: SessionMessage.ID
+  readonly payload: SessionInbox.SyntheticPayload
+  replacement?: SessionInbox.SyntheticPayload
+  discard?: boolean
+}
+
 export interface SessionHooks {
   readonly prompt: SessionPrompt
   readonly context: SessionContext
@@ -161,6 +170,7 @@ export interface SessionHooks {
   readonly "experimental.ws.receive": SessionWebSocketReceive
   readonly retry: SessionRetry
   readonly "before-complete": SessionBeforeComplete
+  readonly "before-synthetic-delivery": SessionBeforeSyntheticDelivery
 }
 
 export type SessionDomain = Pick<

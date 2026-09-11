@@ -637,9 +637,9 @@ const layer = Layer.effectDiscard(
             : {
                 id: input.id,
                 type: "synthetic",
-                text: input.payload.text,
-                description: input.payload.description,
-                metadata: input.payload.metadata,
+                text: (event.data.synthetic ?? input.payload).text,
+                description: (event.data.synthetic ?? input.payload).description,
+                metadata: (event.data.synthetic ?? input.payload).metadata,
                 time: { created: DateTime.makeUnsafe(event.created) },
               },
         )

@@ -163,7 +163,12 @@ export type SessionActive = { type: "execution" | "background" }
 
 export type SessionInboxDelivery = "steer" | "queue"
 
-export type SessionInboxSyntheticPayload = { text: string; description?: string; metadata?: { [x: string]: JsonValue } }
+export type SessionInboxSyntheticPayload = {
+  text: string
+  description?: string
+  metadata?: { [x: string]: JsonValue }
+  slot?: string
+}
 
 export type SessionInboxCompactionPayload = {}
 
@@ -173,7 +178,12 @@ export type SessionGenerateResponse = { data: { text: string } }
 
 export type LocationRef = { directory: string; workspaceID?: string }
 
-export type SessionInboxSyntheticPayload1 = { text: string; description?: string; metadata?: { [x: string]: any } }
+export type SessionInboxSyntheticPayload1 = {
+  text: string
+  description?: string
+  metadata?: { [x: string]: any }
+  slot?: string
+}
 
 export type ShellInfo = {
   id: string
@@ -606,16 +616,6 @@ export type SessionDeleted = {
   durable: { aggregateID: string; seq: number; version: 2 }
   location?: LocationRef
   data: { sessionID: string }
-}
-
-export type SessionInboxDelivered = {
-  id: string
-  created: number
-  metadata?: { [x: string]: any }
-  type: "session.inbox.delivered"
-  durable: { aggregateID: string; seq: number; version: 1 }
-  location?: LocationRef
-  data: { sessionID: string; inboxID: string }
 }
 
 export type SessionInboxCancelled = {
@@ -1220,6 +1220,16 @@ export type SessionMoved = {
 }
 
 export type SessionInboxMovePayload1 = { location: LocationRef; projectID: string; subpath?: string }
+
+export type SessionInboxDelivered = {
+  id: string
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.inbox.delivered"
+  durable: { aggregateID: string; seq: number; version: 1 }
+  location?: LocationRef
+  data: { sessionID: string; inboxID: string; synthetic?: SessionInboxSyntheticPayload1 }
+}
 
 export type SessionShellStarted = {
   id: string
@@ -4277,6 +4287,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["id"]
@@ -4285,6 +4296,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["text"]
@@ -4293,6 +4305,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["description"]
@@ -4301,14 +4314,25 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["metadata"]
+  readonly slot?: {
+    readonly id?: string | null
+    readonly text: string
+    readonly description?: string | null
+    readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
+    readonly delivery?: ("steer" | "queue") | null
+    readonly resume?: boolean | null
+  }["slot"]
   readonly delivery?: {
     readonly id?: string | null
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["delivery"]
@@ -4317,6 +4341,7 @@ export type SessionSyntheticInput = {
     readonly text: string
     readonly description?: string | null
     readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly slot?: string
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["resume"]

@@ -294,6 +294,7 @@ export type SessionSyntheticInput = {
   readonly text: string
   readonly description?: string | undefined
   readonly metadata?: { readonly [x: string]: unknown } | undefined
+  readonly slot?: string | undefined
   readonly delivery?: SessionInbox.Delivery | undefined
   readonly resume?: boolean | undefined
 }
@@ -592,7 +593,11 @@ export type SessionLogOutput =
                 readonly workspaceID?: (string & Brand.Brand<"Workspace.ID">) | undefined
               }
             | undefined
-          readonly data: { readonly sessionID: Session.ID; readonly inboxID: SessionMessage.ID }
+          readonly data: {
+            readonly sessionID: Session.ID
+            readonly inboxID: SessionMessage.ID
+            readonly synthetic?: SessionInbox.SyntheticPayload | undefined
+          }
         }
       | {
           readonly id: Event.ID

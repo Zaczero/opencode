@@ -743,6 +743,7 @@ export function make(options: ClientOptions) {
               text: input["text"],
               description: input["description"],
               metadata: input["metadata"],
+              slot: input["slot"],
               delivery: input["delivery"],
               resume: input["resume"],
             },

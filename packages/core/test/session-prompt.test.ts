@@ -1070,6 +1070,54 @@ describe("Session.prompt", () => {
     }),
   )
 
+  it.effect("refreshes queued synthetic content at promotion through the durable delivery event", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const queued = yield* session.synthetic({
+        sessionID,
+        text: "old snapshot",
+        metadata: { source: "progress" },
+        delivery: "queue",
+        resume: false,
+      })
+      expect(yield* SessionInbox.promote(db, bus, sessionID, "input", (entry) =>
+        Effect.succeed({
+          replacement: { ...entry.payload, text: "current snapshot", description: "current state" },
+        }),
+      )).toBe(1)
+      expect(yield* session.messages({ sessionID })).toMatchObject([
+        {
+          id: queued.id,
+          text: "current snapshot",
+          description: "current state",
+          metadata: { source: "progress" },
+        },
+      ])
+      expect(yield* admittedCount).toBe(0)
+    }),
+  )
+
+  it.effect("withdraws obsolete queued synthetics before promoting the next input", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      yield* session.synthetic({ sessionID, text: "obsolete", slot: "progress", delivery: "queue", resume: false })
+      const next = yield* session.prompt({ sessionID, text: "new request", delivery: "queue", resume: false })
+
+      expect(yield* SessionInbox.promote(db, bus, sessionID, "input", () =>
+        Effect.succeed({ discard: true }),
+      )).toBe(1)
+      expect(yield* session.messages({ sessionID })).toMatchObject([{ id: next.id, type: "user", text: "new request" }])
+      expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxCancelled.type, 1))).toBe(1)
+      expect(yield* admittedCount).toBe(0)
+    }),
+  )
+
   it.effect("promotes prompt and synthetic steers in admission order", () =>
     Effect.gen(function* () {
       yield* setup
@@ -1231,6 +1279,131 @@ describe("Session.inbox", () => {
       expect(wakeCalls).toEqual([])
       expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxDeliveryChanged.type, 1))).toBe(2)
       expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxCancelled.type, 1))).toBe(1)
+    }),
+  )
+
+  it.effect("keeps one undelivered synthetic per slot, carrying the newest snapshot", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const progress = { sessionID, slot: "tasks:progress", delivery: "queue", resume: false } as const
+
+      yield* session.synthetic({ ...progress, text: "3 children running" })
+      const second = yield* session.synthetic({ ...progress, text: "4 children running" })
+      expect(yield* session.inbox(sessionID)).toMatchObject([
+        { id: second.id, type: "synthetic", payload: { text: "4 children running" } },
+      ])
+      expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxCancelled.type, 1))).toBe(1)
+
+      const third = yield* session.synthetic({ ...progress, text: "6 children running" })
+      expect(yield* session.inbox(sessionID)).toMatchObject([
+        { id: third.id, type: "synthetic", payload: { text: "6 children running" } },
+      ])
+      expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxCancelled.type, 1))).toBe(2)
+
+      expect(yield* SessionInbox.promote(db, bus, sessionID, "input")).toBe(1)
+      expect(yield* session.messages({ sessionID })).toMatchObject([
+        { id: third.id, type: "synthetic", text: "6 children running" },
+      ])
+    }),
+  )
+
+  it.effect("collapses only within one slot and one session", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const { db } = yield* Database.Service
+      const other = Session.ID.make("ses_prompt_test_other")
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: other,
+          project_id: Project.ID.global,
+          slug: "other",
+          directory: "/project",
+          title: "other",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const progress = yield* session.synthetic({ sessionID, text: "progress", slot: "progress", resume: false })
+      const health = yield* session.synthetic({ sessionID, text: "health", slot: "health", resume: false })
+      const unslotted = yield* session.synthetic({ sessionID, text: "no slot", resume: false })
+      const elsewhere = yield* session.synthetic({
+        sessionID: other,
+        text: "another session's progress",
+        slot: "progress",
+        resume: false,
+      })
+
+      yield* session.synthetic({ sessionID, text: "no slot again", resume: false })
+      expect((yield* session.inbox(sessionID)).map((item) => item.id)).toEqual([
+        progress.id,
+        health.id,
+        unslotted.id,
+        expect.any(String),
+      ])
+      expect(yield* session.inbox(other)).toMatchObject([
+        { id: elsewhere.id, payload: { text: "another session's progress" } },
+      ])
+      expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxCancelled.type, 1))).toBe(0)
+    }),
+  )
+
+  it.effect("retries a delivered slotted ID without withdrawing newer pending work", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const progress = { sessionID, slot: "progress", delivery: "queue", resume: false } as const
+      const old = yield* session.synthetic({ ...progress, text: "old" })
+      yield* SessionInbox.promote(db, bus, sessionID, "input")
+      const current = yield* session.synthetic({ ...progress, text: "current" })
+      yield* session.synthetic({ ...progress, id: old.id, text: "retry" })
+      expect(yield* session.inbox(sessionID)).toEqual([current])
+    }),
+  )
+
+  it.effect("rolls back a slot replacement when withdrawal fails", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const progress = { sessionID, slot: "progress", delivery: "queue", resume: false } as const
+      const current = yield* session.synthetic({ ...progress, text: "current" })
+      const failure = new Error("withdrawal failed")
+      yield* bus.project(SessionEvent.InboxCancelled, () => Effect.die(failure))
+      expect(
+        yield* session.synthetic({ ...progress, text: "replacement" }).pipe(Effect.catchDefect(Effect.succeed)),
+      ).toBe(failure)
+      expect(yield* session.inbox(sessionID)).toEqual([current])
+      expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxEnqueued.type, 1))).toBe(1)
+    }),
+  )
+
+  it.effect("never withdraws a synthetic the session has already read", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const { db } = yield* Database.Service
+      const progress = { sessionID, slot: "tasks:progress", delivery: "queue", resume: false } as const
+
+      const delivered = yield* session.synthetic({ ...progress, text: "3 children running" })
+      expect(yield* SessionInbox.promote(db, bus, sessionID, "input")).toBe(1)
+
+      const pending = yield* session.synthetic({ ...progress, text: "6 children running" })
+      expect(yield* session.inbox(sessionID)).toMatchObject([
+        { id: pending.id, payload: { text: "6 children running" } },
+      ])
+      expect(yield* session.messages({ sessionID })).toMatchObject([
+        { id: delivered.id, type: "synthetic", text: "3 children running" },
+      ])
+      expect(yield* eventCount(Bus.versionedType(SessionEvent.InboxCancelled.type, 1))).toBe(0)
     }),
   )
 })

@@ -526,6 +526,24 @@ describe("V2 mini transport", () => {
     })
 
     events.push({
+      id: "evt_step_ended",
+      created: 1,
+      type: "session.step.ended",
+      durable: durable("ses_1", 1),
+      data: {
+        sessionID: "ses_1",
+        assistantMessageID: "msg_before",
+        finish: "stop",
+        cost: 0,
+        tokens: { input: 80_001, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+    })
+    while (!ui.events.some((event) => event.type === "stream.patch" && event.patch.usage)) await Bun.sleep(0)
+    expect(ui.events).toContainEqual({
+      type: "stream.patch",
+      patch: { usage: { tokens: 80_001, percent: undefined } },
+    })
+    events.push({
       id: "evt_compaction_delta",
       created: 2,
       type: "session.compaction.delta",
@@ -545,6 +563,10 @@ describe("V2 mini transport", () => {
       { text: "Transport", phase: "progress", messageID: "msg_compaction" },
       { text: "", phase: "final", messageID: "msg_compaction" },
     ])
+    expect(ui.events.filter((event) => event.type === "stream.patch").at(-1)).toEqual({
+      type: "stream.patch",
+      patch: { usage: undefined },
+    })
     await transport.close()
   })
 
@@ -723,7 +745,11 @@ describe("V2 mini transport", () => {
     }
   })
 
-  test("preserves numeric footer tokens, context percentage, and cost-only usage", async () => {
+  test.each([
+    { input: 7_000, total: 7_508, percent: 10 },
+    { input: 79_492, total: 80_000, percent: 100 },
+    { input: 79_493, total: 80_001, percent: 100 },
+  ])("preserves $total footer tokens at $percent% and cost-only usage", async (usage) => {
     const events = feed()
     events.push(connected())
     const ui = footer()
@@ -732,7 +758,8 @@ describe("V2 mini transport", () => {
       sessionID: "ses_1",
       thinking: false,
       footer: ui.api,
-      contextLimit: (model) => (model.providerID === "test" && model.modelID === "model" ? 160_000 : undefined),
+      modelLimit: (model) =>
+        model.providerID === "test" && model.modelID === "model" ? { context: 160_000, compaction: 80_000 } : undefined,
     })
 
     events.push({
@@ -757,12 +784,15 @@ describe("V2 mini transport", () => {
         assistantMessageID: "msg_assistant",
         finish: "stop",
         cost: 0,
-        tokens: { input: 7_000, output: 500, reasoning: 8, cache: { read: 0, write: 0 } },
+        tokens: { input: usage.input, output: 500, reasoning: 8, cache: { read: 0, write: 0 } },
       },
     })
 
     while (!ui.events.some((event) => event.type === "stream.patch" && event.patch.usage)) await Bun.sleep(0)
-    expect(ui.events).toContainEqual({ type: "stream.patch", patch: { usage: { tokens: 7_508, percent: 5 } } })
+    expect(ui.events).toContainEqual({
+      type: "stream.patch",
+      patch: { usage: { tokens: usage.total, percent: usage.percent } },
+    })
 
     events.push({
       id: "evt_cost_only",

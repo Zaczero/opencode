@@ -12,6 +12,7 @@ import {
   type ContentPart,
 } from "@opencode-ai/ai"
 import { Agent } from "@opencode-ai/schema/agent"
+import { Catalog } from "@opencode-ai/schema/catalog"
 import type { Model } from "@opencode-ai/schema/model"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
@@ -135,6 +136,7 @@ export type Outcome =
 
 export interface Interface extends State.Transformable<Editor> {
   readonly enabled: () => boolean
+  readonly threshold: (limit: Model.Info["limit"]) => number | undefined
   readonly required: (input: RequiredInput) => boolean
   readonly compact: (input: AutoInput) => Effect.Effect<Outcome>
   readonly compactManual: (input: ManualInput) => Effect.Effect<Outcome>
@@ -379,6 +381,8 @@ export const layer = Layer.effect(
           if (settings.tokens !== undefined) editor.tokens = settings.tokens
         },
       }),
+      // Model responses include the effective compaction threshold.
+      notify: () => bus.publish(Catalog.Event.Updated, {}).pipe(Effect.asVoid),
     })
     const failed = Effect.fnUntraced(function* (input: {
       readonly sessionID: SessionSchema.ID
@@ -625,21 +629,24 @@ export const layer = Layer.effect(
       return { status: "completed" as const }
     })
     const compact = (input: AutoInput) => execute({ ...input, reason: "auto" })
-    const required = (input: RequiredInput) => {
+    const threshold = (limit: Model.Info["limit"]) => {
       const config = state.get()
-      if (!config.auto) return false
-      // Run the completed checkpoint before considering another automatic compaction.
-      const last = input.messages.at(-1)
-      if (last?.type === "compaction" && last.status === "completed") return false
-      const limit = input.resolved.limit
+      if (!config.auto) return
       const context = limit.context
-      if (context <= 0) return false
+      if (context <= 0) return
       const output = Math.min(limit.output, OUTPUT_TOKEN_MAX)
       const promptCeiling = Math.min(
         limit.input === undefined ? Number.POSITIVE_INFINITY : limit.input - config.buffer,
         context - Math.max(output, config.buffer),
       )
-      return estimateTokens(input) >= promptCeiling
+      return Math.max(0, promptCeiling)
+    }
+    const required = (input: RequiredInput) => {
+      // Run the completed checkpoint before considering another automatic compaction.
+      const last = input.messages.at(-1)
+      if (last?.type === "compaction" && last.status === "completed") return false
+      const limit = threshold(input.resolved.limit)
+      return limit !== undefined && estimateTokens(input) >= limit
     }
     const compactManual = Effect.fn("SessionCompaction.compactManual")(function* (input: ManualInput) {
       if (findTailStart(input.messages, state.get().tokens) === undefined)
@@ -675,6 +682,7 @@ export const layer = Layer.effect(
       transform: state.transform,
       reload: state.reload,
       enabled: () => state.get().auto,
+      threshold,
       required,
       compact,
       compactManual,

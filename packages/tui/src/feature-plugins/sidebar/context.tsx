@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode-ai/plugin/tui"
 import { createMemo, Show } from "solid-js"
-import { contextUsage } from "../../util/session"
+import { sessionContextUsage } from "../../util/session"
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -14,7 +14,11 @@ export function SidebarContext(props: { context: Plugin.Context; sessionID: stri
   const cost = createMemo(() => props.context.data.session.cost(props.sessionID))
 
   const state = createMemo(() =>
-    contextUsage(msg(), props.context.data.location.model.list(session()?.location), session()?.revert?.messageID),
+    sessionContextUsage(
+      msg(),
+      props.context.data.location.model.list(session()?.location),
+      session()?.revert?.messageID,
+    ),
   )
 
   return (

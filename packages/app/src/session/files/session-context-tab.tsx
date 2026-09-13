@@ -2,6 +2,7 @@ import { createMemo, createEffect, on, onCleanup, For, Show } from "solid-js"
 import type { JSX } from "solid-js"
 import { useData } from "@/runtime/server/current"
 import { checksum } from "@opencode-ai/util/encode"
+import { contextUsage, lastAssistantWithUsage } from "@opencode-ai/client/context-usage"
 import { same } from "@/runtime/persistence/equality"
 import { Icon } from "@opencode-ai/ui/icon"
 import { Button } from "@opencode-ai/ui/button"
@@ -112,16 +113,11 @@ export function SessionContextTab() {
   )
 
   const ctx = createMemo(() => {
-    const message = messages().findLast((item) => item.type === "assistant" && !!item.tokens)
-    if (message?.type !== "assistant" || !message.tokens) return
+    const message = lastAssistantWithUsage(messages(), info()?.revert?.messageID)
+    if (!message) return
     const provider = providers.all().get(message.model.providerID)
     const model = provider?.models[message.model.id]
-    const total =
-      message.tokens.input +
-      message.tokens.output +
-      message.tokens.reasoning +
-      message.tokens.cache.read +
-      message.tokens.cache.write
+    const usage = contextUsage(message.tokens, model?.limit)
     return {
       message,
       tokens: message.tokens,
@@ -129,8 +125,8 @@ export function SessionContextTab() {
       modelLabel: model?.name ?? message.model.id,
       limit: model?.limit.context,
       input: message.tokens.input,
-      total,
-      usage: model?.limit.context ? Math.round((total / model.limit.context) * 100) : null,
+      total: usage.tokens,
+      usage: usage.percent,
     }
   })
   const formatter = createMemo(() => createSessionContextFormatter(language.intl()))

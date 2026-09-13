@@ -234,6 +234,7 @@ it.effect("auto compaction estimates current content against the buffered prompt
       time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
       location: Location.Ref.make({ directory: AbsolutePath.make("/tmp") }),
     })
+    yield* compaction.transform((editor) => editor.configure({ buffer: 20_000 }))
     const input = (tokens: number, limit: { context: number; input?: number; output: number }) => {
       const resolved = SessionRunnerModel.resolved(model, {
         account: { identity: "compaction-account" },
@@ -276,14 +277,17 @@ it.effect("auto compaction estimates current content against the buffered prompt
     }
 
     const inputLimited = { context: 400_000, input: 272_000, output: 128_000 }
+    expect(compaction.threshold(inputLimited)).toBe(252_000)
     expect(compaction.required(input(251_999, inputLimited))).toBe(false)
     expect(compaction.required(input(252_000, inputLimited))).toBe(true)
 
     const contextLimited = { context: 100_000, output: 10_000 }
+    expect(compaction.threshold(contextLimited)).toBe(80_000)
     expect(compaction.required(input(79_999, contextLimited))).toBe(false)
     expect(compaction.required(input(80_000, contextLimited))).toBe(true)
 
     const outputLimited = { context: 100_000, output: 30_000 }
+    expect(compaction.threshold(outputLimited)).toBe(70_000)
     expect(compaction.required(input(69_999, outputLimited))).toBe(false)
     expect(compaction.required(input(70_000, outputLimited))).toBe(true)
 
@@ -349,6 +353,21 @@ it.effect("auto compaction estimates current content against the buffered prompt
       time: { created: 0, completed: 0 },
     })
     expect(compaction.required({ ...grown, messages: [checkpoint] })).toBe(false)
+
+    const cappedOutput = { context: 100_000, output: 128_000 }
+    expect(compaction.threshold(cappedOutput)).toBe(68_000)
+    expect(compaction.required(input(67_999, cappedOutput))).toBe(false)
+    expect(compaction.required(input(68_000, cappedOutput))).toBe(true)
+
+    const exhausted = { context: 10_000, output: 1_000 }
+    expect(compaction.threshold(exhausted)).toBe(0)
+    expect(compaction.required(input(1, exhausted))).toBe(true)
+    expect(compaction.threshold({ context: 0, output: 1_000 })).toBeUndefined()
+    expect(compaction.required(input(100_000, { context: 0, output: 1_000 }))).toBe(false)
+
+    yield* compaction.transform((editor) => editor.configure({ auto: false }))
+    expect(compaction.threshold(inputLimited)).toBeUndefined()
+    expect(compaction.required(input(400_000, inputLimited))).toBe(false)
   }),
 )
 

@@ -1,4 +1,4 @@
-import type { ProjectListOutput, WorktreeDirectory } from "@opencode-ai/client/promise"
+import type { ModelInfo, ProjectListOutput, WorktreeDirectory } from "@opencode-ai/client/promise"
 
 export type Project = Omit<ProjectListOutput[number], "canonical"> & {
   worktree: string
@@ -113,11 +113,7 @@ export type Model = {
       cache: { read: number; write: number }
     }
   }
-  limit: {
-    context: number
-    input?: number
-    output: number
-  }
+  limit: ModelInfo["limit"]
   status: "alpha" | "beta" | "deprecated" | "active"
   options: Record<string, unknown>
   headers: Record<string, string>

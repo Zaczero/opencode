@@ -76,7 +76,7 @@ export function runProviders(providers: CurrentProvider[], models: CurrentModel[
     provider.models[model.id] = {
       name: model.name,
       cost: cost === undefined ? undefined : { input: cost },
-      limit: { context: model.limit.context },
+      limit: { context: model.limit.context, compaction: model.limit.compaction },
       status: model.status,
       variants: Object.fromEntries((model.variants ?? []).map((variant) => [variant.id, {}])),
     }

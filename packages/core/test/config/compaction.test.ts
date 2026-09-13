@@ -18,6 +18,7 @@ import { Location } from "@opencode-ai/core/location"
 import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ConfigCompaction } from "@opencode-ai/schema/config/compaction"
+import { Catalog } from "@opencode-ai/schema/catalog"
 import { Model } from "@opencode-ai/schema/model"
 import { Document, Event, Info } from "@opencode-ai/schema/config"
 import { Money } from "@opencode-ai/schema/money"
@@ -52,6 +53,22 @@ const it = testEffect(
   ),
 )
 describe("ConfigCompactionPlugin.Plugin", () => {
+  it.effect("refreshes model readers after compaction settings change", () =>
+    Effect.gen(function* () {
+      const compaction = yield* SessionCompaction.Service
+      const bus = yield* Bus.Service
+      const updates = yield* bus.subscribe(Catalog.Event.Updated).pipe(
+        Stream.take(2),
+        Stream.map(() => compaction.threshold(limit)),
+        Stream.runCollect,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* compaction.transform((editor) => editor.configure({ buffer: 13_000 }))
+      yield* compaction.transform((editor) => editor.configure({ auto: false }))
+      expect(yield* Fiber.join(updates)).toEqual([87_000, undefined])
+    }),
+  )
+
   it.live("merges settings and reloads changed config", () =>
     Effect.gen(function* () {
       const compaction = yield* SessionCompaction.Service
@@ -81,6 +98,7 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       yield* ConfigCompactionPlugin.Plugin.effect(host({ event: { subscribe: () => bus.subscribe(Event.Updated) } }))
 
       expect(compaction.required(nearInput)).toBe(false)
+      expect(compaction.threshold(limit)).toBeUndefined()
       const started = yield* bus
         .subscribe(SessionEvent.Compaction.Started)
         .pipe(Stream.runHead, Effect.forkScoped({ startImmediately: true }))
@@ -130,6 +148,7 @@ describe("ConfigCompactionPlugin.Plugin", () => {
         yield* Effect.die(new Error("Timed out waiting for compaction config reload"))
       })
       expect(compaction.required(bufferedInput)).toBe(false)
+      expect(compaction.threshold(limit)).toBe(90_000)
       selections.length = 0
       expect(
         yield* compaction.compactManual({

@@ -119,6 +119,10 @@ export const Info = Schema.Struct({
     context: Schema.Int,
     input: Schema.Int.pipe(optional),
     output: Schema.Int,
+    compaction: Schema.Int.annotate({
+      description:
+        "Effective automatic compaction threshold in tokens. Omitted when automatic compaction is disabled or the context size is unknown.",
+    }).pipe(optional),
   }),
 })
   .annotate({ identifier: "Model.Info" })

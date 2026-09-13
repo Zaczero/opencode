@@ -17,11 +17,13 @@ import { Location } from "@opencode/core/location"
 import { Project } from "@opencode/core/project"
 import { AbsolutePath } from "@opencode/core/schema"
 import { ConfigCompaction } from "@opencode/schema/config/compaction"
+import { Model } from "@opencode/schema/model"
 import { Document, Event, Info } from "@opencode/schema/config"
 import { Money } from "@opencode/schema/money"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { testEffect } from "../lib/effect"
+import { location } from "../fixture/location"
 import { host } from "../plugin/host"
 
 const model = LanguageModel.make({
@@ -46,10 +48,29 @@ const it = testEffect(
         }),
       ),
       Config.node.replace(config),
+      Location.node.replace(
+        Layer.succeed(Location.Service, location({ directory: AbsolutePath.make("/compaction-config-project") })),
+      ),
     ]),
   ),
 )
 describe("ConfigCompactionPlugin.Plugin", () => {
+  it.effect("refreshes model readers after compaction settings change", () =>
+    Effect.gen(function* () {
+      const compaction = yield* SessionCompaction.Service
+      const bus = yield* Bus.Service
+      const updates = yield* bus.subscribe(Model.Event.Updated).pipe(
+        Stream.take(2),
+        Stream.map(() => compaction.threshold(limit)),
+        Stream.runCollect,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      yield* compaction.transform((editor) => editor.configure({ buffer: 13_000 }))
+      yield* compaction.transform((editor) => editor.configure({ auto: false }))
+      expect(yield* Fiber.join(updates)).toEqual([87_000, undefined])
+    }),
+  )
+
   it.live("merges settings and reloads changed config", () =>
     Effect.gen(function* () {
       const compaction = yield* SessionCompaction.Service
@@ -74,6 +95,7 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       yield* ConfigCompactionPlugin.Plugin.effect(host({ event: { subscribe: () => bus.subscribe(Event.Updated) } }))
 
       expect(compaction.required(nearInput)).toBe(false)
+      expect(compaction.threshold(limit)).toBeUndefined()
       const started = yield* bus
         .subscribe(SessionEvent.Compaction.Started)
         .pipe(Stream.runHead, Effect.forkScoped({ startImmediately: true }))
@@ -121,6 +143,7 @@ describe("ConfigCompactionPlugin.Plugin", () => {
         yield* Effect.die(new Error("Timed out waiting for compaction config reload"))
       })
       expect(compaction.required(bufferedInput)).toBe(false)
+      expect(compaction.threshold(limit)).toBe(90_000)
 
       yield* config.setEntries([
         new Document({

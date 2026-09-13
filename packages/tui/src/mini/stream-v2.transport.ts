@@ -10,6 +10,7 @@ import type {
   SessionInboxInfo,
 } from "@opencode/client/promise"
 import { Event } from "@opencode/schema/event"
+import { contextUsage } from "@opencode/client/context-usage"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { blockerStatus, pickBlockerView } from "./session-data"
 import { writeSessionOutput } from "./stream"
@@ -29,6 +30,7 @@ import type {
   FooterQueuedPrompt,
   RunFilePart,
   RunInput,
+  RunProvider,
   RunDelivery,
   RunPrompt,
   RunPromptPart,
@@ -57,7 +59,7 @@ type StreamInput = {
   trace?: Trace
   signal?: AbortSignal
   onCatalogRefresh?: (signal?: AbortSignal) => unknown | Promise<unknown>
-  contextLimit?: (model: NonNullable<RunInput["model"]>) => number | undefined
+  modelLimit?: (model: NonNullable<RunInput["model"]>) => RunProvider["models"][string]["limit"]
 }
 
 export type SessionTurnInput = {
@@ -1124,6 +1126,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     if (event.type === "session.compaction.ended") {
+      write([], { usage: undefined })
       if (!state.activeCompaction) return
       const messageID = state.activeCompaction
       state.activeCompaction = undefined
@@ -1384,21 +1387,14 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     if (event.type === "session.step.ended") {
-      const total =
-        event.data.tokens.input +
-        event.data.tokens.output +
-        event.data.tokens.reasoning +
-        event.data.tokens.cache.read +
-        event.data.tokens.cache.write
-      const limit = state.stepModel ? input.contextLimit?.(state.stepModel) : undefined
+      const usage = contextUsage(event.data.tokens, state.stepModel ? input.modelLimit?.(state.stepModel) : undefined)
       state.stepModel = undefined
       if (!showTools()) flushQuietText(event.data.assistantMessageID)
       write([], {
         usage:
-          total > 0 || event.data.cost
+          usage.tokens > 0 || event.data.cost
             ? {
-                tokens: total,
-                percent: limit ? Math.round((total / limit) * 100) : undefined,
+                ...usage,
                 cost: event.data.cost || undefined,
               }
             : undefined,

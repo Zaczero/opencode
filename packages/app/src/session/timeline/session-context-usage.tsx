@@ -3,6 +3,7 @@ import { ProgressCircle } from "@opencode/ui/progress-circle"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { createMediaQuery } from "@solid-primitives/media"
+import { contextUsage, lastAssistantWithUsage } from "@opencode/client/context-usage"
 
 import { useFile } from "@/workspaces/files/model"
 import { useLayout } from "@/shell/state/layout"
@@ -66,19 +67,10 @@ export function SessionContextUsage(props: SessionContextUsageProps) {
   )
 
   const context = createMemo(() => {
-    const message = messages().findLast((item) => item.type === "assistant" && !!item.tokens)
-    if (message?.type !== "assistant" || !message.tokens) return
+    const message = lastAssistantWithUsage(messages(), info()?.revert?.messageID)
+    if (!message) return
     const model = providers.all().get(message.model.providerID)?.models[message.model.id]
-    const total =
-      message.tokens.input +
-      message.tokens.output +
-      message.tokens.reasoning +
-      message.tokens.cache.read +
-      message.tokens.cache.write
-    return {
-      total,
-      usage: model?.limit.context ? Math.round((total / model.limit.context) * 100) : null,
-    }
+    return contextUsage(message.tokens, model?.limit)
   })
   const cost = createMemo(() => {
     return usd().format(info()?.cost ?? 0)
@@ -113,7 +105,7 @@ export function SessionContextUsage(props: SessionContextUsageProps) {
         appearance="indicator"
         size={16}
         strokeWidth={2}
-        percentage={context()?.usage ?? 0}
+        percentage={context()?.percent ?? 0}
         style={{
           "--progress-circle-background": "var(--v2-background-bg-layer-04, var(--border-weak-base))",
           "--progress-circle-background-overlay": "var(--v2-overlay-simple-overlay-pressed, transparent)",
@@ -124,17 +116,17 @@ export function SessionContextUsage(props: SessionContextUsageProps) {
   )
   const compactCircle = () => (
     <div class="flex items-center justify-center">
-      <ProgressCircle appearance="compact" percentage={context()?.usage ?? 0} />
+      <ProgressCircle appearance="compact" percentage={context()?.percent ?? 0} />
     </div>
   )
 
   const tooltipValue = () => (
     <div class="flex w-[120px] flex-col gap-2">
       <ContextTooltipRow name={language.t("context.usage.cost")} value={cost()} />
-      <ContextTooltipRow name={language.t("context.usage.usage")} value={`${context()?.usage ?? 0}%`} />
+      <ContextTooltipRow name={language.t("context.usage.usage")} value={`${context()?.percent ?? 0}%`} />
       <ContextTooltipRow
         name={language.t("context.usage.tokens")}
-        value={context()?.total.toLocaleString(language.intl()) ?? "0"}
+        value={context()?.tokens.toLocaleString(language.intl()) ?? "0"}
       />
     </div>
   )

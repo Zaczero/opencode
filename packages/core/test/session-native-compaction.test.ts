@@ -25,9 +25,11 @@ import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 import { SessionSchema } from "@opencode/core/session/schema"
 import { SessionStore } from "@opencode/core/session/store"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { DateTime, Deferred, Effect, Fiber, Schema } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer, Schema } from "effect"
 import { testEffect } from "./lib/effect"
 import { host } from "./plugin/host"
+import { location } from "./fixture/location"
+import { Location } from "@opencode/core/location"
 
 const it = testEffect(
   AppNodeBuilder.build(
@@ -42,7 +44,12 @@ const it = testEffect(
       PluginHooks.node,
       llmClient,
     ]),
-    [Bus.node.replace(Bus.configured({ persist: true }))],
+    [
+      Bus.node.replace(Bus.configured({ persist: true })),
+      Location.node.replace(
+        Layer.succeed(Location.Service, location({ directory: AbsolutePath.make("/native-compaction-project") })),
+      ),
+    ],
   ),
 )
 

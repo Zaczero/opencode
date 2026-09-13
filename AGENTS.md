@@ -212,6 +212,10 @@ const table = sqliteTable("session", {
   message contains its tool calls and results, so retaining complete messages does
   not require widening to the previous user prompt. Truncate synthetic shell output
   like foreground tool output, preserving its job identity, log path, and exit status.
+- Model responses expose `limit.compaction` from `SessionCompaction.threshold`; its
+  state changes refresh the catalog. Context meters share the Client's
+  `context-usage` helper, round up, and clamp at 100%. The numerator is reported
+  usage; automatic compaction also estimates content added since that report.
 - Only root sessions expose `question`; children report decisions to their parent.
   `subagent_interrupt` targets direct children, cancels their background shells, and
   distinguishes a settled stop from an interrupt still awaiting cleanup. Cancelled

@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
-import { contextUsage, formatContextUsage } from "../../util/session"
+import { sessionContextUsage, formatContextUsage } from "../../util/session"
 import { useTerminalDimensions } from "@opentui/solid"
 import { stringWidth } from "../../util/string-width"
 
@@ -35,7 +35,7 @@ export function PromptFooter(props: {
     if (!props.sessionID) return []
     const session = props.context.data.session.get(props.sessionID)
     if (!session) return []
-    const usage = contextUsage(
+    const usage = sessionContextUsage(
       props.context.data.session.message.list(props.sessionID),
       props.context.data.location.model.list(session.location),
       session.revert?.messageID,

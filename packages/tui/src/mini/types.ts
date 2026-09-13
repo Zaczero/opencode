@@ -63,6 +63,7 @@ type RunProviderModel = {
   }
   limit?: {
     context: number
+    compaction?: number
   }
   status?: string
   variants?: Record<string, unknown>

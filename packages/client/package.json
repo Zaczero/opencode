@@ -19,6 +19,7 @@
     ".": "./src/promise/index.ts",
     "./promise": "./src/promise/index.ts",
     "./promise/api": "./src/promise/api.ts",
+    "./context-usage": "./src/context-usage.ts",
     "./service": "./src/promise/service.ts",
     "./solid": "./src/solid/index.ts",
     "./effect": "./src/effect/index.ts",

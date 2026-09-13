@@ -812,8 +812,8 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
         onSessionActivity: (working) => shell.setTitle(state.sessionTitle, working),
         trace: log,
         onCatalogRefresh: requestCatalogRefresh,
-        contextLimit: (model) =>
-          state.providers.find((provider) => provider.id === model.providerID)?.models[model.modelID]?.limit?.context,
+        modelLimit: (model) =>
+          state.providers.find((provider) => provider.id === model.providerID)?.models[model.modelID]?.limit,
       })
       if (footer.isClosed) {
         await handle.close()

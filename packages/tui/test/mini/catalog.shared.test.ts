@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
 import { OpenCode } from "@opencode/client/promise"
+import { contextUsage } from "@opencode/client/context-usage"
 import { loadRunReferences, runProviders } from "../../src/mini/catalog.shared"
 import { catalogModel, catalogProvider } from "./fixture/catalog"
 
@@ -8,6 +9,19 @@ afterEach(() => {
 })
 
 describe("run catalog shared", () => {
+  test("preserves the server compaction threshold for mini usage", () => {
+    const model = catalogModel({ id: "model", providerID: "provider", name: "Model" })
+    const providers = runProviders(
+      [catalogProvider("provider", "Provider")],
+      [{ ...model, limit: { context: 200_000, output: 32_000, compaction: 120_000 } }],
+    )
+    expect(
+      contextUsage(
+        { input: 120_001, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        providers[0].models.model.limit,
+      ),
+    ).toEqual({ tokens: 120_001, percent: 100 })
+  })
   test("loads visible project references from the current reference catalog", async () => {
     const client = OpenCode.make({ baseUrl: "https://opencode.test" })
     const list = spyOn(client.reference, "list").mockImplementation(

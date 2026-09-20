@@ -43,6 +43,8 @@ export interface SessionCompactionResult {
 }
 
 export interface SessionCompaction extends SessionContext {
+  /** Override the final local-summary instruction, appended after hooks run. */
+  prompt?: string
   /** Set to use this compaction and skip the model request. */
   result?: SessionCompactionResult
 }

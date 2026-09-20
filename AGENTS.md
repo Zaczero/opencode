@@ -212,6 +212,11 @@ const table = sqliteTable("session", {
   message contains its tool calls and results, so retaining complete messages does
   not require widening to the previous user prompt. Truncate synthetic shell output
   like foreground tool output, preserving its job identity, log path, and exit status.
+- Local compaction uses the selected Session model and its ordinary structured
+  request prefix. Compaction hooks may override the final `prompt`; append that
+  instruction after hooks and disable tool choice while retaining definitions.
+  Context-transforming plugins must register for both `context` and `compaction`
+  to preserve their prefix.
 - Model responses expose `limit.compaction` from `SessionCompaction.threshold`; its
   state changes refresh the catalog. Context meters share the Client's
   `context-usage` helper, round up, and clamp at 100%. The numerator is reported

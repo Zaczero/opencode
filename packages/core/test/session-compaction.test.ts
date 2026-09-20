@@ -555,6 +555,81 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
   }),
 )
 
+it.effect("awaits a custom summary instruction while preserving the request prefix and tools", () =>
+  Effect.gen(function* () {
+    const captured: LLMRequest[] = []
+    const compaction = yield* SessionCompaction.Service.pipe(
+      Effect.provide(Layer.fresh(SessionCompaction.layer)),
+      Effect.provideService(Location.Service, location({ directory: AbsolutePath.make("/compaction-project") })),
+      Effect.provide(
+        Layer.mock(LLMClient.Service)({
+          stream: (request) => {
+            captured.push(request)
+            return Stream.make(
+              LLMEvent.textDelta({ id: "summary", text: "Custom checkpoint without standard headings" }),
+            )
+          },
+        }),
+      ),
+    )
+    const hooks = yield* PluginHooks.Service
+    const modelRequests = yield* SessionModelRequest.Service
+    const store = yield* SessionStore.Service
+    const session = yield* insertSession(Session.ID.make("ses_custom_instruction"))
+    const messages = [userMessage("Preserve this conversation", 1)]
+    const context = {
+      ...loaded(session, messages),
+      tools: {
+        definitions: [
+          ToolDefinition.make({
+            name: "read",
+            description: "Read a file",
+            inputSchema: { type: "object", properties: {} },
+          }),
+        ],
+        execute: () => Effect.die("Compaction must not execute tools"),
+      },
+    }
+    const transcript = SessionModelRequest.baseTranscript({
+      agent: context.agent.info,
+      model: context.model,
+      tools: context.tools,
+      initial: context.initial,
+      messages,
+    })
+    const primary = yield* modelRequests.primary({
+      session,
+      agent: context.agent.id,
+      model: context.model,
+      tools: context.tools,
+      ...transcript,
+    })
+    yield* hooks.register("session", "compaction", (event) =>
+      Effect.gen(function* () {
+        yield* Effect.yieldNow
+        event.prompt = "Write our custom checkpoint"
+      }),
+    )
+    expect(
+      yield* compaction.compactManual({
+        session,
+        resolveContext: () => Effect.succeed(context),
+        prepare: modelRequests.compaction,
+        messages,
+        inputID: SessionMessage.ID.create(),
+      }),
+    ).toEqual({ status: "completed" })
+    expect(captured).toHaveLength(1)
+    expect(captured[0]?.system).toEqual(primary.request.system)
+    expect(captured[0]?.messages.slice(0, -1)).toEqual([...primary.request.messages])
+    expect(captured[0]?.messages.at(-1)?.content).toMatchObject([{ type: "text", text: "Write our custom checkpoint" }])
+    expect(captured[0]?.tools).toEqual(primary.request.tools)
+    expect(captured[0]?.toolChoice?.type).toBe("none")
+    expect(captured[0]?.promptCacheKey).toBe(primary.request.promptCacheKey)
+    expect(yield* store.context(session.id)).toMatchObject([{ summary: "Custom checkpoint without standard headings" }])
+  }),
+)
+
 it.effect("compaction hooks can supply the summary instead of the model", () =>
   Effect.gen(function* () {
     requests = []

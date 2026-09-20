@@ -681,8 +681,14 @@ export const layer = Layer.effect(
       if (prepared.event.result) return yield* supplied(input, prepared.event.result, history.recent)
       // Hooks see the transcript alone; the summary prompt is appended after they run.
       const first = LLMRequest.update(prepared.request, {
-        messages: [...prepared.request.messages, Message.user(buildPrompt(previous !== undefined, legacy))],
+        messages: [
+          ...prepared.request.messages,
+          Message.user(prepared.event.prompt ?? buildPrompt(previous !== undefined, legacy)),
+        ],
+        toolChoice: { type: "none" },
       })
+      const validSummary =
+        prepared.event.prompt === undefined ? hasSummarySection : (summary: string) => summary.trim().length > 0
       // Both requests share the retry allowance; rejected output never enters the reminder request.
       const transient = SessionRunnerRetry.transient(yield* SessionRunnerRetry.policy(context.session.id), {
         agent: context.agent.id,
@@ -757,11 +763,11 @@ export const layer = Layer.effect(
           ),
           Effect.onInterrupt(() => recordUsage.pipe(Effect.andThen(interrupted(input)))),
         )
-        if (failure || hasSummarySection(chunks.join(""))) break
+        if (failure || validSummary(chunks.join(""))) break
       }
       yield* recordUsage
       const summary = chunks.join("")
-      if (failure || !hasSummarySection(summary)) {
+      if (failure || !validSummary(summary)) {
         const error = failure ?? {
           type: "compaction.failed" as const,
           message: summary.trim()

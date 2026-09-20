@@ -2065,7 +2065,7 @@ describe("OpenAI Responses route", () => {
             ToolDefinition.make({ name: "read", description: "Read a file", inputSchema: { type: "object" } }),
             ToolDefinition.make({ name: "grep", description: "Search files", inputSchema: { type: "object" } }),
           ],
-          toolChoice: "none",
+          toolChoice: "auto",
           providerOptions: {
             reasoningEffort: "high",
             reasoningSummary: "auto",

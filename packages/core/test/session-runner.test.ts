@@ -2550,13 +2550,12 @@ describe("SessionRunnerLLM", () => {
           "tools",
           "generation",
           "providerOptions",
-          "toolChoice",
           "cache",
           "promptCacheKey",
           "http",
         ] as const)
           expect(compact[field]).toEqual(normal[field])
-        expect(compact.toolChoice).toBeUndefined()
+        expect(compact.toolChoice?.type).toBe("none")
         expect(compact.system.map((part) => part.text)).toContain("Review the project carefully.")
         expect(requestAgents[2]).toBe(agentID)
         expect(s.executions).toEqual(["x".repeat(4_000)])
@@ -2573,7 +2572,7 @@ describe("SessionRunnerLLM", () => {
         const prefix = input(before.body[key])
         expect(input(after.body[key]).slice(0, prefix.length)).toEqual([...prefix])
         expect(after.body).toMatchObject(
-          Object.fromEntries(Object.entries(before.body).filter(([name]) => name !== key)),
+          Object.fromEntries(Object.entries(before.body).filter(([name]) => name !== key && name !== "tool_choice")),
         )
       })
     }
@@ -2611,7 +2610,7 @@ describe("SessionRunnerLLM", () => {
           expect(s.requests).toHaveLength(2)
           expect(s.requests[1].messages.slice(0, -1)).toEqual([...s.requests[0].messages])
           expect(userTexts(s.requests[1]).at(-1)).toContain("did not fill in the required summary template")
-          expect(s.requests.every((request) => request.toolChoice === undefined)).toBe(true)
+          expect(s.requests.every((request) => request.toolChoice?.type === "none")).toBe(true)
           expect(s.executions).toEqual([])
           expect(JSON.stringify(yield* s.messages)).not.toContain("rejected-summary-state")
           expect((yield* s.messages).find((message) => message.id === compact.id)).toMatchObject(

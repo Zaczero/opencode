@@ -35,7 +35,7 @@ export interface ToolEditor {
   remove(id: string): void
 }
 
-interface ToolHooks {
+export interface ToolHooks {
   readonly "execute.before": {
     tool: string
     readonly sessionID: Session.ID

@@ -21,7 +21,6 @@ import { webSocketConstructor } from "../effect/app-node-platform.js"
 
 const ROTATE_AFTER_MS = 55 * 60 * 1000
 const CONNECT_TIMEOUT = "15 seconds"
-const IDLE_TIMEOUT = "5 minutes"
 /** Consecutive exchanges lost to the socket before the Session stays on HTTP. */
 const MAX_STREAM_FAILURES = 5
 const events = Metric.counter("opencode_session_websocket_events_total", {
@@ -407,20 +406,9 @@ export const makeLayer = (connector: WebSocketConnector) =>
 
         let terminal: ChannelObservation | undefined
         const token = {}
+        // No gap timeout: the connection's pong heartbeat decides liveness, and silence between frames
+        // is normal while a model reasons.
         const frames = Stream.fromQueue(active.queue).pipe(
-          Stream.timeoutOrElse({
-            duration: IDLE_TIMEOUT,
-            orElse: () =>
-              Stream.fail(
-                transportError("Timed out waiting for WebSocket data", {
-                  url: exchange.connect.url,
-                  operation: "read",
-                  code: "idle-timeout",
-                  phase: "receive",
-                  delivery: active.delivery === "provider-observed" ? "accepted" : "ambiguous",
-                }),
-              ),
-          }),
           Stream.mapEffect((frame) => (interceptor?.receive ? interceptor.receive(frame) : Effect.succeed(frame))),
           Stream.mapEffect((frame) => exchange.driver.observe(create, frame)),
           Stream.tap((observation) =>

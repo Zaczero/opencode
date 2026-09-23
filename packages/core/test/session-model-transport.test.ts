@@ -599,7 +599,7 @@ describe("SessionModelTransport", () => {
     )
   })
 
-  test("times out an idle accepted request and poisons its socket", async () => {
+  test("keeps an accepted request open through a long silence", async () => {
     const started = Deferred.makeUnsafe<void>()
     const messages = queue<string | Uint8Array, AIError>()
     let closed = 0
@@ -616,20 +616,17 @@ describe("SessionModelTransport", () => {
       connector,
       Effect.gen(function* () {
         const transport = yield* SessionModelTransport.Service
-        const running = yield* collect(transport.bind(session), exchange("idle")).pipe(
+        const running = yield* collect(transport.bind(session), exchange("thinking")).pipe(
           Effect.forkChild({ startImmediately: true }),
         )
         yield* Deferred.await(started)
         yield* Effect.yieldNow
 
-        yield* TestClock.adjust("5 minutes")
-        const result = yield* Effect.result(Fiber.join(running))
+        yield* TestClock.adjust("20 minutes")
+        Queue.offerUnsafe(messages, "completed:thinking")
 
-        expect(result).toMatchObject({
-          _tag: "Failure",
-          failure: { reason: { _tag: "Transport", code: "idle-timeout", delivery: "ambiguous" } },
-        })
-        expect(closed).toBe(1)
+        expect(yield* Fiber.join(running)).toEqual(["completed:thinking"])
+        expect(closed).toBe(0)
       }),
     )
   })

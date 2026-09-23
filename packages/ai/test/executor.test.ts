@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Ref, Stream } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { Headers, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import { LLM, AIError, HttpContext, InvalidProviderOutputError, TransportError } from "../src/index.js"
 import { LLMClient, RequestExecutor, WebSocketTransport, type WebSocketChannelExecutor } from "../src/route.js"
@@ -643,6 +644,65 @@ describe("WebSocket channel execution", () => {
       expect(error.reason.body).toBe(event.reason)
       expect(error.reason.cause).toBe(event)
       expect(error.reason.http).toBeUndefined()
+      yield* connection.close
+    }),
+  )
+
+  it.effect("keeps a silent connection open while its peer answers pings", () =>
+    Effect.gen(function* () {
+      let pings = 0
+      class TestSocket extends EventTarget {
+        readyState = globalThis.WebSocket.OPEN
+        send() {}
+        close() {}
+        ping() {
+          pings++
+          this.dispatchEvent(new Event("pong"))
+        }
+      }
+      const socket = new TestSocket()
+      const connection = yield* WebSocketTransport.fromWebSocket(
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+        socket as unknown as globalThis.WebSocket,
+        { url: "wss://provider.test/responses", headers: Headers.empty },
+      )
+      const next = yield* connection.messages.pipe(Stream.take(1), Stream.runCollect, Effect.forkChild)
+
+      yield* TestClock.adjust("20 minutes")
+      socket.dispatchEvent(new MessageEvent("message", { data: "late frame" }))
+
+      expect(Array.from(yield* Fiber.join(next))).toEqual(["late frame"])
+      expect(pings).toBe(40)
+      yield* connection.close
+    }),
+  )
+
+  it.effect("fails a connection whose peer stops answering pings", () =>
+    Effect.gen(function* () {
+      let closed: number | undefined
+      class TestSocket extends EventTarget {
+        readyState = globalThis.WebSocket.OPEN
+        send() {}
+        close(code: number) {
+          closed = code
+        }
+        ping() {}
+      }
+      const socket = new TestSocket()
+      const connection = yield* WebSocketTransport.fromWebSocket(
+        // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+        socket as unknown as globalThis.WebSocket,
+        { url: "wss://provider.test/responses", headers: Headers.empty },
+      )
+      const drained = yield* connection.messages.pipe(Stream.runDrain, Effect.flip, Effect.forkChild)
+
+      yield* TestClock.adjust("30 seconds")
+      expect(closed).toBeUndefined()
+      yield* TestClock.adjust("30 seconds")
+
+      const error = yield* Fiber.join(drained)
+      expect(error.reason).toMatchObject({ _tag: "Transport", code: "unresponsive", phase: "receive" })
+      expect(closed).toBe(1000)
       yield* connection.close
     }),
   )

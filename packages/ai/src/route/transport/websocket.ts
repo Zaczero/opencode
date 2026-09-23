@@ -1,4 +1,4 @@
-import { Cause, Effect, Queue, Stream } from "effect"
+import { Cause, Effect, Fiber, Queue, Stream } from "effect"
 import { Headers } from "effect/unstable/http"
 import { Socket } from "effect/unstable/socket"
 import {
@@ -38,7 +38,17 @@ type WebSocketConstructorWithHeaders = (
   options?: { readonly headers?: Headers.Headers },
 ) => globalThis.WebSocket
 
+// Bun reports pongs as DOM events and Node's ws only through its EventEmitter; browsers cannot ping.
+type PingingWebSocket = globalThis.WebSocket & {
+  readonly ping?: () => void
+  readonly on?: (event: "pong", listener: () => void) => unknown
+  readonly off?: (event: "pong", listener: () => void) => unknown
+}
+
 const MAX_FRAME_BYTES = 16 * 1024 * 1024
+// Liveness is judged by pongs, never by message gaps: a reasoning model can stream nothing for many
+// minutes on a healthy connection, while an unanswered ping means the peer or the path is gone.
+const PING_INTERVAL = "30 seconds"
 const transportError = (
   message: string,
   input: {
@@ -160,6 +170,16 @@ const waitOpen = (ws: globalThis.WebSocket, input: WebSocketRequest) => {
     ws.addEventListener("close", onClose, { once: true })
     signal.addEventListener("abort", onAbort, { once: true })
   })
+}
+
+const listenPong = (ws: PingingWebSocket, listener: () => void) => {
+  if (typeof ws.ping !== "function") return undefined
+  if (typeof ws.on === "function" && typeof ws.off === "function") {
+    ws.on("pong", listener)
+    return () => ws.off?.("pong", listener)
+  }
+  ws.addEventListener("pong", listener)
+  return () => ws.removeEventListener("pong", listener)
 }
 
 export const toWebSocketUrl = (value: string) =>
@@ -289,15 +309,49 @@ export const fromWebSocket = (
         ),
       )
     }
+    ws.addEventListener("message", onMessage)
+    ws.addEventListener("error", onError)
+    ws.addEventListener("close", onClose)
+
+    const pinging: PingingWebSocket = ws
+    let answered = true
+    const stopPong = listenPong(pinging, () => {
+      answered = true
+    })
+    const heartbeat = stopPong
+      ? yield* Effect.gen(function* () {
+          while (ws.readyState === globalThis.WebSocket.OPEN) {
+            yield* Effect.sleep(PING_INTERVAL)
+            if (ws.readyState !== globalThis.WebSocket.OPEN) return
+            if (!answered) {
+              Queue.failCauseUnsafe(
+                messages,
+                Cause.fail(
+                  transportError("WebSocket peer stopped answering pings", {
+                    url: input.url,
+                    operation: "read",
+                    code: "unresponsive",
+                    phase: "receive",
+                  }),
+                ),
+              )
+              ws.close(1000)
+              return
+            }
+            answered = false
+            pinging.ping?.()
+          }
+        }).pipe(Effect.forkDetach)
+      : undefined
     const cleanup = Effect.sync(() => {
       ws.removeEventListener("message", onMessage)
       ws.removeEventListener("error", onError)
       ws.removeEventListener("close", onClose)
-    }).pipe(Effect.andThen(Queue.shutdown(messages)))
-
-    ws.addEventListener("message", onMessage)
-    ws.addEventListener("error", onError)
-    ws.addEventListener("close", onClose)
+      stopPong?.()
+    }).pipe(
+      Effect.andThen(heartbeat ? Fiber.interrupt(heartbeat) : Effect.void),
+      Effect.andThen(Queue.shutdown(messages)),
+    )
 
     return {
       sendText: (message) =>

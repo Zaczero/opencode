@@ -332,6 +332,16 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("lowers the hosted OpenAI web search tool", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        LLM.request({ model, prompt: "What changed today?", tools: [OpenAI.webSearch()] }),
+      )
+
+      expect(prepared.body.tools).toEqual([{ type: "web_search", external_web_access: true }])
+    }),
+  )
+
   it.effect("lowers tool namespaces without flattening leaf names", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
@@ -3751,6 +3761,44 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("replays a hosted item kept in provider metadata when the host stored readable content", () =>
+    Effect.gen(function* () {
+      const item = { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search" } }
+      const result = (providerMetadata?: { openai: Record<string, unknown> }) =>
+        compileRequest(
+          LLM.request({
+            model,
+            messages: [
+              Message.user("Search."),
+              Message.assistant([
+                ToolCallPart.make({
+                  id: "ws_1",
+                  name: "web_search",
+                  input: { type: "search" },
+                  providerExecuted: true,
+                  providerMetadata,
+                }),
+                {
+                  type: "tool-result",
+                  id: "ws_1",
+                  name: "web_search",
+                  result: { type: "text", value: JSON.stringify(item) },
+                  providerExecuted: true,
+                  providerMetadata,
+                },
+              ]),
+              Message.user("Continue."),
+            ],
+            providerOptions: { store: false },
+          }),
+        )
+
+      expect((yield* result({ openai: { itemId: "ws_1", item } })).body.input[1]).toEqual(item)
+      // Without provider state (another account's history) the result degrades to readable text.
+      expect((yield* result()).body.input[1]).toMatchObject({ type: "message", role: "user" })
+    }),
+  )
+
   it.effect("replays OpenAI hosted tool extensions but rejects foreign and unknown items", () =>
     Effect.gen(function* () {
       const items = [
@@ -4727,7 +4775,7 @@ describe("OpenAI Responses route", () => {
           name: "web_search",
           result: { type: "json", value: item },
           providerExecuted: true,
-          providerMetadata: { openai: { itemId: "ws_1" } },
+          providerMetadata: { openai: { itemId: "ws_1", item } },
         },
       ])
     }),
@@ -4768,7 +4816,7 @@ describe("OpenAI Responses route", () => {
           name: "computer_use",
           result: { type: "json", value: item },
           providerExecuted: true,
-          providerMetadata: { openai: { itemId: "computer_1" } },
+          providerMetadata: { openai: { itemId: "computer_1", item } },
         },
       ])
     }),
@@ -4922,7 +4970,7 @@ describe("OpenAI Responses route", () => {
         name: "code_interpreter",
         result: { type: "json", value: item },
         providerExecuted: true,
-        providerMetadata: { openai: { itemId: "ci_1" } },
+        providerMetadata: { openai: { itemId: "ci_1", item } },
       })
     }),
   )

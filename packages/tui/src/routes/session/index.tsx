@@ -3160,8 +3160,17 @@ function WebFetch(props: ToolProps) {
 function WebSearch(props: ToolProps) {
   const ctx = use()
   const provider = createMemo(() => stringValue(props.metadata.provider))
+  // OpenAI's hosted search reports its action instead of a query: several queries, or a page it opened.
+  const query = createMemo(
+    () =>
+      stringValue(props.input.query) ??
+      (Array.isArray(props.input.queries)
+        ? props.input.queries.filter((item) => typeof item === "string").join(", ")
+        : undefined) ??
+      stringValue(props.input.url),
+  )
   return (
-    <InlineTool icon="◈" pending="Searching web…" complete={stringValue(props.input.query)} part={props.part}>
+    <InlineTool icon="◈" pending="Searching web…" complete={query()} part={props.part}>
       <Show when={provider()} fallback="Web Search">
         {(value) => (
           <>
@@ -3177,7 +3186,7 @@ function WebSearch(props: ToolProps) {
           </>
         )}
       </Show>{" "}
-      "{stringValue(props.input.query)}"
+      "{query()}"
     </InlineTool>
   )
 }

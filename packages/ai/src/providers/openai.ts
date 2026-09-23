@@ -57,6 +57,26 @@ export const imageGeneration = (options: ImageGenerationOptions = {}) =>
     },
   })
 
+export interface WebSearchOptions {
+  /** False restricts search to OpenAI's cached index. */
+  readonly externalWebAccess?: boolean
+  readonly searchContextSize?: "low" | "medium" | "high"
+}
+
+export const webSearch = (options: WebSearchOptions = {}) =>
+  ToolDefinition.make({
+    name: "web_search",
+    description: "Search the web using OpenAI's hosted web search tool.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    native: {
+      openai: {
+        type: "web_search",
+        external_web_access: options.externalWebAccess ?? true,
+        search_context_size: options.searchContextSize,
+      },
+    },
+  })
+
 export type Settings = ProviderPackage.Settings &
   OpenAIProviderOptionsInput & {
     readonly apiKey?: string

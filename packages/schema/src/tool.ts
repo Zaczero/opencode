@@ -111,4 +111,6 @@ export type Info<
   readonly output?: Output
   readonly format?: InputFormat
   readonly options?: Options
+  /** Provider-hosted declaration keyed by provider protocol; that provider executes the call itself. */
+  readonly native?: Readonly<Record<string, unknown>>
 }

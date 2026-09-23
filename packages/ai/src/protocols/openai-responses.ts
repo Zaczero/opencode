@@ -44,6 +44,15 @@ const OpenAIResponsesImageGenerationTool = Schema.Struct({
   size: Schema.optional(OpenAIImage.Size),
 })
 
+// https://platform.openai.com/docs/guides/tools-web-search
+const OpenAIResponsesWebSearchTool = Schema.Struct({
+  type: Schema.tag("web_search"),
+  external_web_access: Schema.optional(Schema.Boolean),
+  search_context_size: Schema.optional(Schema.Literals(["low", "medium", "high"])),
+})
+
+const OpenAIResponsesNativeTool = Schema.Union([OpenAIResponsesImageGenerationTool, OpenAIResponsesWebSearchTool])
+
 const OpenAIResponsesHostedToolItem = Schema.Union([
   Schema.StructWithRest(
     Schema.Struct({
@@ -89,6 +98,7 @@ const OpenAIResponsesTools = Schema.Union([
   OpenResponses.Tool,
   OpenAIResponsesNamespace,
   OpenAIResponsesImageGenerationTool,
+  OpenAIResponsesWebSearchTool,
 ])
 
 const OpenAIResponsesToolChoice = Schema.Union([
@@ -150,21 +160,25 @@ const supportsEffortUpdates = (request: LLMRequest) => {
   return /(?:^|\/)gpt-6-astra$/i.test(request.model.id)
 }
 
-const nativeImageToolInput = (tool: ToolDefinition) => {
+const nativeToolInput = (tool: ToolDefinition) => {
   const native = tool.native?.openai
-  return ProviderShared.isRecord(native) && native.type === "image_generation" ? native : undefined
+  return ProviderShared.isRecord(native) && (native.type === "image_generation" || native.type === "web_search")
+    ? native
+    : undefined
 }
 
 const nativeImageTool = (tool: ToolDefinition) => {
-  const native = nativeImageToolInput(tool)
+  const native = nativeToolInput(tool)
   return Schema.is(OpenAIResponsesImageGenerationTool)(native) ? native : undefined
 }
 
 const lowerTool = Effect.fn("OpenAIResponses.lowerTool")(function* (tool: ToolDefinition, inputSchema: JsonSchema) {
-  const native = nativeImageToolInput(tool)
+  const native = nativeToolInput(tool)
   if (native !== undefined) {
-    if (Schema.is(OpenAIResponsesImageGenerationTool)(native)) return native
-    return yield* ProviderShared.invalidRequest("OpenAI Responses image generation tool options are invalid")
+    if (Schema.is(OpenAIResponsesNativeTool)(native)) return native
+    return yield* ProviderShared.invalidRequest(
+      `OpenAI Responses ${native.type === "web_search" ? "web search" : "image generation"} tool options are invalid`,
+    )
   }
   // https://platform.openai.com/docs/guides/function-calling#custom-tools
   if (tool.format !== undefined && OpenResponses.freeformInputKey(tool) !== undefined)

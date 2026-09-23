@@ -96,6 +96,54 @@ const setup = Effect.gen(function* () {
   return Object.assign(fixture, { websearch, kv, registry: Context.get(context, Tool.Service) })
 })
 
+const hooks = new Map<string, (event: never) => Effect.Effect<void>>()
+const hookedToolNode = makeLocationNode({
+  name: "test/websearch-tool-hooks",
+  layer: Layer.effectDiscard(
+    Effect.gen(function* () {
+      const websearch = yield* WebSearch.Service
+      yield* registerToolPlugin(WebSearchTool.Plugin, {
+        websearch: webSearchHost(websearch),
+        session: {
+          hook: (name: string, callback: (event: never) => Effect.Effect<void>) =>
+            Effect.sync(() => {
+              hooks.set(name, callback)
+              return { dispose: Effect.void }
+            }),
+        } as never,
+      })
+    }),
+  ),
+  deps: [Tool.node, Permission.node, WebSearch.node, Form.node],
+})
+
+describe("WebSearchTool per-model selection", () => {
+  it.effect("offers OpenAI hosted search on OpenAI and the integration elsewhere, never both", () =>
+    Effect.gen(function* () {
+      const websearch = yield* TestWebSearch.Service
+      yield* websearch.transform((editor) =>
+        providers.forEach((provider) => editor.add({ ...provider, execute: () => Effect.succeed([]) })),
+      )
+      yield* Layer.build(
+        AppNodeBuilder.build(LayerNode.group([Tool.node, hookedToolNode]), [
+          Permission.node.replace(permissionLayer({ assert: () => Effect.void })),
+          WebSearch.node.replace(Layer.succeed(WebSearch.Service, websearch)),
+          Form.node.replace(Layer.mock(Form.Service, {})),
+          Image.node.replace(imagePassthrough),
+        ]),
+      )
+      const offered = (providerID: string) =>
+        Effect.gen(function* () {
+          const event = { model: { providerID, id: "model" }, tools: { websearch: {}, web_search: {}, read: {} } }
+          yield* hooks.get("context")!(event as never)
+          return Object.keys(event.tools).toSorted()
+        })
+      expect(yield* offered("openai")).toEqual(["read", "web_search"])
+      expect(yield* offered("anthropic")).toEqual(["read", "websearch"])
+    }),
+  )
+})
+
 describe("WebSearchTool registration", () => {
   it.effect("asserts permission before delegating to WebSearch", () =>
     Effect.gen(function* () {
@@ -103,7 +151,11 @@ describe("WebSearchTool registration", () => {
       const registry = fixture.registry
       yield* fixture.websearch.select(WebSearch.ID.make("exa"))
 
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["websearch", "execute"])
+      expect((yield* toolDefinitions(registry)).map((tool) => tool.name).toSorted()).toEqual([
+        "execute",
+        "web_search",
+        "websearch",
+      ])
       expect(
         yield* executeTool(registry, {
           sessionID,

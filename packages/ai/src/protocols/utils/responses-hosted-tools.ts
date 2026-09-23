@@ -38,6 +38,11 @@ export const onDone: (
     const tool = tools[item.type]
     if (!tool) return [state, []] satisfies OpenResponses.StepResult
     const providerMetadata = OpenResponses.providerMetadata(state, { itemId: item.id })
+    const result: ToolResultPart["result"] = tool.result
+      ? yield* tool.result(item)
+      : item.error !== undefined && item.error !== null
+        ? { type: "error", value: item.error }
+        : { type: "json", value: item }
     const events: LLMEvent[] = []
     const lifecycle = Lifecycle.stepStart(state.lifecycle, events)
     events.push(
@@ -51,13 +56,12 @@ export const onDone: (
       LLMEvent.toolResult({
         id: item.id,
         name: tool.name,
-        result: tool.result
-          ? yield* tool.result(item)
-          : item.error !== undefined && item.error !== null
-            ? { type: "error", value: item.error }
-            : { type: "json", value: item },
+        result,
         providerExecuted: true,
-        providerMetadata,
+        // Hosts that keep only readable result content can still replay a successful item verbatim.
+        // Custom results (image bytes) are too large to duplicate; failures replay as portable errors.
+        providerMetadata:
+          result.type === "json" ? OpenResponses.providerMetadata(state, { itemId: item.id, item }) : providerMetadata,
       }),
     )
     return [{ ...state, lifecycle }, events] satisfies OpenResponses.StepResult

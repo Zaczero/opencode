@@ -10,6 +10,8 @@ import { Permission } from "../../permission.js"
 import { WebSearch } from "../../websearch.js"
 
 export const name = "websearch"
+/** OpenAI's hosted search; the provider runs it, so it is never executed here. */
+export const hostedName = "web_search"
 export const NO_RESULTS = "No search results found. Please try a different query."
 const providerSelectionLock = Semaphore.makeUnsafe(1)
 const httpErrors = new Map([
@@ -37,7 +39,17 @@ export const Plugin = {
     const websearch = yield* WebSearch.Service
 
     yield* ctx.tool
-      .transform((editor) =>
+      .transform((editor) => {
+        // Shares the local tool's permission so one rule governs both. A provider-run search cannot
+        // prompt, so an `ask` rule does not stop it; only `deny` does.
+        editor.add({
+          name: hostedName,
+          options: { codemode: false, permission: name },
+          description: "Search the web with OpenAI's hosted web search.",
+          input: Schema.Struct({}),
+          native: { openai: { type: "web_search", external_web_access: true } },
+          execute: () => Effect.fail(new ToolFailure({ message: "OpenAI runs web search itself" })),
+        })
         editor.add({
           name,
           options: { codemode: false },
@@ -177,8 +189,8 @@ export const Plugin = {
                 })
               }),
             ),
-        }),
-      )
+        })
+      })
       .pipe(Effect.orDie)
 
     const hook = (event: SessionHooks["context"]) =>
@@ -187,7 +199,14 @@ export const Plugin = {
           Effect.as(false),
           Effect.catchTag("WebSearch.Disabled", () => Effect.succeed(true)),
         )
-        if (disabled) delete event.tools[name]
+        if (disabled) {
+          delete event.tools[name]
+          delete event.tools[hostedName]
+          return
+        }
+        // One search tool per model: OpenAI searches natively, every other provider uses the integration.
+        if (event.model.providerID === "openai") delete event.tools[name]
+        else delete event.tools[hostedName]
       })
     yield* ctx.session.hook("context", hook)
     yield* ctx.session.hook("compaction", hook)

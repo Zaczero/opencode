@@ -793,9 +793,12 @@ const lowerMessages = Effect.fn("OpenResponses.lowerMessages")(function* (
         if (part.type === "tool-result" && part.providerExecuted === true) {
           flushText()
           const id = itemID(part.providerMetadata, providerMetadataKey)
+          const stored = part.providerMetadata?.[providerMetadataKey]
           const hosted =
             part.result.type !== "json"
-              ? undefined
+              ? ProviderShared.isRecord(stored) && Schema.is(HostedToolItem)(stored.item)
+                ? stored.item
+                : undefined
               : Schema.is(HostedToolItem)(part.result.value)
                 ? part.result.value
                 : adapter.restoreHostedToolItem?.(part.result.value)

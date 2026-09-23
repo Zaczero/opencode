@@ -522,6 +522,7 @@ describe("LocationServiceMap", () => {
             "subagent_interrupt",
             "subagent_list",
             "subagent_output",
+            "web_search",
             "webfetch",
             "websearch",
           ])
@@ -542,6 +543,7 @@ describe("LocationServiceMap", () => {
             "subagent_interrupt",
             "subagent_list",
             "subagent_output",
+            "web_search",
             "webfetch",
             "websearch",
           ])

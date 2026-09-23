@@ -24,6 +24,7 @@ export const definition = (tool: Tool.Info<any, any>): ToolDefinition => ({
   inputSchema: inputJsonSchema(tool.input),
   ...(tool.output === undefined ? {} : { outputSchema: outputJsonSchema(tool.output) }),
   ...(tool.format === undefined ? {} : { format: tool.format }),
+  ...(tool.native === undefined ? {} : { native: tool.native }),
 })
 
 export const execute = (tool: Tool.Info<any, any>, input: unknown, context: Tool.Context) =>

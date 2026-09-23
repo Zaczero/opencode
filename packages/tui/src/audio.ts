@@ -42,6 +42,45 @@ export function play(sound: AudioSound, options?: AudioPlayOptions) {
   return current.play(sound, options)
 }
 
+export type Recording = {
+  readonly sampleRate: number
+  /** Ends capture and returns the mono samples recorded so far. */
+  readonly stop: () => Promise<Float32Array>
+  readonly cancel: () => void
+}
+
+/** Starts capturing mono audio from the system's default input device. */
+export async function record(): Promise<Recording | null> {
+  const current = getAudio()
+  if (!current) return null
+  const stream = await current.openCapture({ channels: 1 })
+  const reader = stream.readable.getReader()
+  const chunks: Float32Array[] = []
+  const pump = (async () => {
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) return
+      chunks.push(next.value)
+    }
+  })().catch(() => undefined)
+  const finish = async () => {
+    stream.stop()
+    await reader.cancel().catch(() => undefined)
+    await pump
+    stream.dispose()
+  }
+  return {
+    sampleRate: stream.sampleRate,
+    stop: async () => {
+      await finish()
+      const samples = new Float32Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0))
+      chunks.reduce((offset, chunk) => (samples.set(chunk, offset), offset + chunk.length), 0)
+      return samples
+    },
+    cancel: () => void finish(),
+  }
+}
+
 export function dispose() {
   audio?.dispose()
   audio = undefined

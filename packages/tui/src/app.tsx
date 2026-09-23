@@ -235,7 +235,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         targetFps: 60,
         gatherStats: false,
         exitOnCtrlC: false,
-        useKittyKeyboard: {},
+        // Release events let dictation end when space is let go instead of guessing from auto-repeat.
+        useKittyKeyboard: { events: true },
         autoFocus: false,
         openConsoleOnError: false,
         useMouse: config.mouse,

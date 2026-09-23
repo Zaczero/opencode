@@ -90,7 +90,11 @@ export type PromptProps = {
 export type PromptRef = {
   focused: boolean
   current: PromptInfo
+  /** Cursor position in display columns. */
+  cursor: number
   set(prompt: PromptInfo): void
+  insert(text: string): void
+  deleteBackward(): void
   reset(): void
   blur(): void
   focus(): void
@@ -674,6 +678,17 @@ export function Prompt(props: PromptProps) {
     },
     get current() {
       return store.prompt
+    },
+    get cursor() {
+      return input.cursorOffset
+    },
+    insert(text) {
+      if (disabled()) return
+      input.insertText(text)
+    },
+    deleteBackward() {
+      if (disabled()) return
+      input.deleteCharBackward()
     },
     focus() {
       if (disabled()) return

@@ -1,5 +1,6 @@
 import type { IntegrationOAuthMethodRegistration } from "@opencode/plugin/effect/integration"
 import { define } from "@opencode/plugin/effect/plugin"
+import { Transcription } from "@opencode/schema/transcription"
 import { Deferred, Effect, Option, Schema, Semaphore, Stream } from "effect"
 import type { Server } from "node:http"
 import { App } from "../../app.js"
@@ -18,6 +19,9 @@ const callbackBindAttempts = 10
 const callbackBindRetryDelay = 200
 const pollingSafetyMargin = 3000
 const codexBaseURL = "https://chatgpt.com/backend-api/codex"
+// ChatGPT's dictation endpoint; the Codex CLI used it for voice input. Uploaded audio stays on the account for 30 days.
+const chatgptTranscribeURL = "https://chatgpt.com/backend-api/transcribe"
+const TranscribeResponse = Schema.Struct({ text: Schema.String })
 const browserMethodID = Integration.MethodID.make("chatgpt-browser")
 const headlessMethodID = Integration.MethodID.make("chatgpt-headless")
 // ChatGPT accounts lost gpt-5.4 and gpt-5.4-mini in Codex on 2026-08-31 (replacements: gpt-5.6-terra, gpt-5.6-luna).
@@ -251,6 +255,46 @@ export const OpenAIPlugin = define({
       editor.method.update(headless(ctx.app))
     })
     yield* load()
+
+    yield* ctx.rpc
+      .register(Transcription.Definition, {
+        transcribe: (input, call) =>
+          Effect.gen(function* () {
+            // Resolve per call: the active account may have changed, and resolving refreshes an expiring token.
+            const connection = yield* ctx.integration.connection.active("openai")
+            const credential = connection
+              ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
+              : undefined
+            if (!credential)
+              return yield* Effect.fail(call.error("unavailable", "Connect an OpenAI account to dictate.", {}))
+            const form = new FormData()
+            form.append("file", new Blob([Buffer.from(input.audio, "base64")], { type: "audio/wav" }), "audio.wav")
+            const account = credential.type === "oauth" ? credential.metadata?.accountID : undefined
+            const [url, headers] =
+              credential.type === "oauth"
+                ? [
+                    chatgptTranscribeURL,
+                    {
+                      authorization: `Bearer ${credential.access}`,
+                      originator: "opencode",
+                      ...(typeof account === "string" ? { "chatgpt-account-id": account } : {}),
+                    },
+                  ]
+                : ["https://api.openai.com/v1/audio/transcriptions", { authorization: `Bearer ${credential.key}` }]
+            if (credential.type === "key") form.append("model", "gpt-4o-mini-transcribe")
+            const response = yield* Effect.tryPromise(() => fetch(url, { method: "POST", headers, body: form })).pipe(
+              Effect.mapError(() => call.error("unavailable", "Could not reach OpenAI to transcribe.", {})),
+            )
+            if (!response.ok)
+              return yield* Effect.fail(call.error("failed", `Transcription failed (HTTP ${response.status}).`, {}))
+            const body = yield* Effect.tryPromise(() => response.json()).pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(TranscribeResponse)),
+              Effect.mapError(() => call.error("failed", "OpenAI returned an unreadable transcription.", {})),
+            )
+            return { text: body.text.trim() }
+          }),
+      })
+      .pipe(Effect.orDie)
     yield* ctx.provider.transform((providers) => {
       const item = providers.get(Provider.ID.openai)
       if (!item) return

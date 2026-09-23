@@ -9,6 +9,7 @@ async function setup(route: Route = { type: "session", sessionID: "session" }) {
   const notifications: AttentionNotifyOptions[] = []
   const toasts: ToastOptions[] = []
   const handlers = new Map<OpenCodeEvent["type"], ((event: OpenCodeEvent) => void)[]>()
+  const settled = new Set<(sessionID: string) => void>()
   const session = (id: string, title: string, parentID?: string): Session => ({
     id,
     title,
@@ -51,6 +52,10 @@ async function setup(route: Route = { type: "session", sessionID: "session" }) {
       session: {
         get: (sessionID: string) => sessions[sessionID],
         status: () => "running" as const,
+        onSettled: (handler: (sessionID: string) => void) => {
+          settled.add(handler)
+          return () => settled.delete(handler)
+        },
       },
     },
   } as unknown as Context)
@@ -60,6 +65,9 @@ async function setup(route: Route = { type: "session", sessionID: "session" }) {
     toasts,
     emit(event: OpenCodeEvent) {
       for (const handler of handlers.get(event.type) ?? []) handler(event)
+    },
+    settle(sessionID = "session") {
+      for (const handler of settled) handler(sessionID)
     },
   }
 }
@@ -229,12 +237,14 @@ describe("internal notifications TUI plugin", () => {
     ])
   })
 
-  test("notifies for terminal lifecycle events even when attached after execution started", async () => {
+  test("notifies done each time a session settles, even when attached after execution started", async () => {
     const harness = await setup()
 
     harness.emit(executionSucceeded("event-1"))
+    harness.settle()
     harness.emit(executionStarted("event-2"))
     harness.emit(executionSucceeded("event-3"))
+    harness.settle()
 
     expect(harness.notifications).toEqual([
       {
@@ -243,6 +253,26 @@ describe("internal notifications TUI plugin", () => {
         notification: { when: "blurred" },
         sound: { name: "done", when: "always" },
       },
+      {
+        title: "Demo session",
+        message: "Session done",
+        notification: { when: "blurred" },
+        sound: { name: "done", when: "always" },
+      },
+    ])
+  })
+
+  test("stays silent while an ended execution still owns background work", async () => {
+    const harness = await setup()
+
+    harness.emit(executionStarted("event-1"))
+    harness.emit(executionSucceeded("event-2"))
+    harness.emit(executionStarted("event-3"))
+    harness.emit(executionSucceeded("event-4"))
+    expect(harness.notifications).toEqual([])
+
+    harness.settle()
+    expect(harness.notifications).toEqual([
       {
         title: "Demo session",
         message: "Session done",
@@ -263,6 +293,7 @@ describe("internal notifications TUI plugin", () => {
     })
     harness.emit(executionStarted("event-2", "subagent"))
     harness.emit(executionSucceeded("event-3", "subagent"))
+    harness.settle("subagent")
 
     expect(harness.notifications).toEqual([
       {
@@ -285,7 +316,7 @@ describe("internal notifications TUI plugin", () => {
 
     harness.emit(executionStarted("event-1"))
     harness.emit(executionFailed("event-2"))
-    harness.emit(executionSucceeded("event-3"))
+    harness.settle()
 
     expect(harness.notifications).toEqual([
       {

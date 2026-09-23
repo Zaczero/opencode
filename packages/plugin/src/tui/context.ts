@@ -73,6 +73,8 @@ export interface Data {
     family(sessionID: string): string[]
     cost(sessionID: string): number
     status(sessionID: string): "idle" | "running"
+    /** Called when a session stops running with nothing left to wake it: no execution, owned background work, or undelivered results. */
+    onSettled(handler: (sessionID: string) => void): () => void
     readonly pending: {
       list(sessionID: string): SessionInboxInfo[]
       sync(sessionID: string): Promise<void>

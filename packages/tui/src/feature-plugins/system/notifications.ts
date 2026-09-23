@@ -22,24 +22,8 @@ export default Plugin.define({
   id: "opencode.notifications",
   setup(context) {
     const errored = new Set<string>()
-    const terminal = new Set<string>()
     const forms = new Set<string>()
     const permissions = new Set<string>()
-
-    const started = (sessionID: string) => {
-      errored.delete(sessionID)
-      terminal.delete(sessionID)
-    }
-    const ended = (sessionID: string) => {
-      if (terminal.has(sessionID)) return
-      terminal.add(sessionID)
-      if (errored.has(sessionID)) {
-        errored.delete(sessionID)
-        return
-      }
-      const session = context.data.session.get(sessionID)
-      notify(context, sessionID, "Session done", session?.parentID ? "subagent_done" : "done")
-    }
 
     const dispose = [
       context.data.on("form.created", (event) => {
@@ -55,20 +39,20 @@ export default Plugin.define({
         notify(context, event.data.sessionID, "Permission needs input", "permission")
       }),
       context.data.on("permission.replied", (event) => permissions.delete(event.data.requestID)),
-      context.data.on("session.execution.started", (event) => started(event.data.sessionID)),
-      context.data.on("session.execution.succeeded", (event) => ended(event.data.sessionID)),
-      context.data.on("session.execution.interrupted", (event) => ended(event.data.sessionID)),
+      context.data.on("session.execution.started", (event) => errored.delete(event.data.sessionID)),
       context.data.on("session.execution.failed", (event) => {
         const sessionID = event.data.sessionID
-        if (terminal.has(sessionID)) return
-        if (errored.has(sessionID)) {
-          ended(sessionID)
-          return
-        }
+        if (errored.has(sessionID)) return
         errored.add(sessionID)
         notify(context, sessionID, event.data.error.message, "error")
         context.ui.toast.show({ sessionID, title: "Session failed", message: event.data.error.message, variant: "error" })
-        ended(sessionID)
+      }),
+      // An execution can end while shells or subagents it started keep working and will wake it again;
+      // only settling means the session is done. A failure already reported stands in for its settle.
+      context.data.session.onSettled((sessionID) => {
+        if (errored.delete(sessionID)) return
+        const session = context.data.session.get(sessionID)
+        notify(context, sessionID, "Session done", session?.parentID ? "subagent_done" : "done")
       }),
     ]
 

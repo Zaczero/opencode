@@ -1057,6 +1057,85 @@ test.each(["completed", "failed"] as const)("coalesces activity bursts around a 
   }
 })
 
+test("reports a session settled only once the background work it owns ends", async () => {
+  let active: Record<string, { type: "execution" | "background" }> = { ses_refresh: { type: "background" } }
+  let reads = 0
+  const setup = activityFixture(() => {
+    reads++
+    return Response.json({ data: active })
+  })
+  const settled: string[] = []
+  const stop = setup.data.session.onSettled((sessionID) => settled.push(sessionID))
+  const execution = (type: "session.execution.started" | "session.execution.succeeded", seq: number) =>
+    setup.emit({
+      id: `evt_${seq}`,
+      created: seq,
+      type,
+      durable: { aggregateID: "ses_refresh", seq, version: 1 },
+      data: { sessionID: "ses_refresh" },
+    })
+  try {
+    execution("session.execution.started", 1)
+    execution("session.execution.succeeded", 2)
+    await wait(() => reads === 1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(setup.data.session.status("ses_refresh")).toBe("running")
+    expect(settled).toEqual([])
+
+    active = {}
+    setup.emit({
+      id: "evt_background_done",
+      created: 3,
+      type: "session.synthetic",
+      durable: { aggregateID: "ses_refresh", seq: 3, version: 1 },
+      data: { sessionID: "ses_refresh", text: "Background work finished" },
+    })
+    await wait(() => settled.length > 0)
+    expect(settled).toEqual(["ses_refresh"])
+  } finally {
+    stop()
+    setup.dispose()
+  }
+})
+
+test("does not report a settle for a shutdown interruption or an optimistic status", async () => {
+  let active: Record<string, { type: "execution" | "background" }> = { ses_refresh: { type: "execution" } }
+  let reads = 0
+  const setup = activityFixture(() => {
+    reads++
+    return Response.json({ data: active })
+  })
+  const settled: string[] = []
+  const stop = setup.data.session.onSettled((sessionID) => settled.push(sessionID))
+  try {
+    setup.emit({
+      id: "evt_started",
+      created: 1,
+      type: "session.execution.started",
+      durable: { aggregateID: "ses_refresh", seq: 1, version: 1 },
+      data: { sessionID: "ses_refresh" },
+    })
+    setup.emit({
+      id: "evt_shutdown",
+      created: 2,
+      type: "session.execution.interrupted",
+      durable: { aggregateID: "ses_refresh", seq: 2, version: 1 },
+      data: { sessionID: "ses_refresh", reason: "shutdown" },
+    })
+    setup.data.session.setStatus("ses_optimistic", "running")
+    setup.data.session.setStatus("ses_optimistic", "idle")
+    active = {}
+    setup.emit({ type: "server.connected", data: {} })
+    await wait(() => reads > 0)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(setup.data.session.status("ses_refresh")).toBe("idle")
+    expect(settled).toEqual([])
+  } finally {
+    stop()
+    setup.dispose()
+  }
+})
+
 test("retries activity after a failed read when another event arrives", async () => {
   let reads = 0
   const setup = activityFixture(() => {

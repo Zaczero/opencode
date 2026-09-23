@@ -267,6 +267,20 @@ export function createData(config: CreateDataInput) {
     executingUpdates = undefined
   })
 
+  // Activity counts a session's execution, the background work it owns, and results not yet delivered to it,
+  // so leaving it means nothing remains that would wake the session again. Only sessions the server showed
+  // running can settle, and only by the authoritative snapshot: an optimistic status or a shutdown
+  // interruption changes the display without the work being done.
+  const settleable = new Set<string>()
+  const settledHandlers = new Set<(sessionID: string) => void>()
+  function notifySettled() {
+    for (const sessionID of settleable) {
+      if (store.session.active[sessionID] === "running") continue
+      settleable.delete(sessionID)
+      settledHandlers.forEach((handler) => handler(sessionID))
+    }
+  }
+
   function setSessionActive(sessionID: string, status: DataSessionStatus) {
     activeUpdates?.set(sessionID, status)
     setStore("session", "active", sessionID, status)
@@ -308,6 +322,8 @@ export function createData(config: CreateDataInput) {
           activeUpdates = undefined
           executingUpdates = undefined
           setStore("session", "active", reconcile(Object.fromEntries(statuses)))
+          for (const sessionID of Object.keys(active)) settleable.add(sessionID)
+          notifySettled()
           setStore("session", "executing", reconcile(Object.fromEntries(executing)))
           const missing = [...statuses.keys()].filter((sessionID) => store.session.info[sessionID] === undefined)
           if (missing.length === 0) return
@@ -652,6 +668,7 @@ export function createData(config: CreateDataInput) {
     messageIndex.delete(sessionID)
     messageVersion.delete(sessionID)
     settledVersion.delete(sessionID)
+    settleable.delete(sessionID)
     sync.invalidate(`session:${sessionID}`)
     sync.invalidate(`session.family:${sessionID}`)
     sync.invalidate(`session.pending:${sessionID}`)
@@ -889,6 +906,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.shell.started":
+        settleable.add(event.data.sessionID)
         setSessionActive(event.data.sessionID, "running")
         message.insert(event.data.sessionID, {
           id: messageIDFromEvent(event.id),
@@ -1086,6 +1104,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.execution.started":
+        settleable.add(event.data.sessionID)
         setSessionActive(event.data.sessionID, "running")
         setSessionExecuting(event.data.sessionID, true)
         return
@@ -1111,6 +1130,7 @@ export function createData(config: CreateDataInput) {
           if (currentAssistant) currentAssistant.retry = undefined
         })
         if (event.type === "session.execution.interrupted" && event.data.reason === "shutdown") {
+          settleable.delete(event.data.sessionID)
           setSessionActive(event.data.sessionID, "idle")
           return
         }
@@ -1464,6 +1484,10 @@ export function createData(config: CreateDataInput) {
       },
       status(sessionID: string) {
         return store.session.active[sessionID] ?? "idle"
+      },
+      onSettled(handler: (sessionID: string) => void) {
+        settledHandlers.add(handler)
+        return () => settledHandlers.delete(handler)
       },
       executing(sessionID: string) {
         return store.session.executing[sessionID] ?? false

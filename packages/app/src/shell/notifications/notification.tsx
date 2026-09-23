@@ -280,19 +280,32 @@ export function createServerNotificationState(input: {
     })
   }
 
+  // A failure is reported when it happens and stands in for the settle that follows it. Every window sees
+  // the same execution events, so the last one names a settle identically for cross-window dedupe.
+  const errored = new Set<string>()
+  const ended = new Map<string, string>()
   const unsub = input.sdk.event.listen((event) => {
-    if (event.type !== "session.execution.succeeded" && event.type !== "session.execution.failed") return
-
-    const time = Date.now()
-    if (event.type === "session.execution.failed") {
-      handleSessionError(event.data.sessionID, event.data.error, event.id, time)
-      return
-    }
-    handleSessionIdle(event.data.sessionID, event.id, time)
+    if (event.type === "session.execution.started") errored.delete(event.data.sessionID)
+    if (
+      event.type === "session.execution.succeeded" ||
+      event.type === "session.execution.interrupted" ||
+      event.type === "session.execution.failed"
+    )
+      ended.set(event.data.sessionID, event.id)
+    if (event.type !== "session.execution.failed") return
+    errored.add(event.data.sessionID)
+    handleSessionError(event.data.sessionID, event.data.error, event.id, Date.now())
+  })
+  // An execution can end while shells or subagents it started keep working and will wake it again;
+  // only settling means the session is done.
+  const unsettle = input.data.session.onSettled((sessionID) => {
+    if (errored.delete(sessionID)) return
+    handleSessionIdle(sessionID, `settled:${ended.get(sessionID) ?? sessionID}`, Date.now())
   })
   onCleanup(() => {
     meta.disposed = true
     unsub()
+    unsettle()
   })
 
   return {

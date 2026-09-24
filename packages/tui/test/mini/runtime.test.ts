@@ -50,6 +50,97 @@ afterEach(() => {
 })
 
 describe("run interactive runtime", () => {
+  test("empty submit commits only changed model and effort without a prompt", async () => {
+    const sdk = OpenCode.make({ baseUrl: "https://opencode.test" })
+    const api = footer()
+    const ready = defer<void>()
+    let lifecycle!: LifecycleInput
+    let selected = { providerID: "test", id: "first", variant: "low" }
+    stubCatalogLists(sdk, {
+      providers: [catalogProvider("test", "Test")],
+      models: [
+        catalogModel({ id: "first", providerID: "test", variants: ["low", "high"] }),
+        catalogModel({ id: "second", providerID: "test", variants: ["low", "high"] }),
+      ],
+    })
+    const get = spyOn(sdk.session, "get").mockImplementation(() => ok({ model: selected }) as never)
+    const switchModel = spyOn(sdk.session, "switchModel").mockImplementation(({ model }) => {
+      selected = { ...model, variant: model.variant ?? "default" }
+      return ok(undefined)
+    })
+    let prompts = 0
+    const task = runInteractiveDeferredMode(
+      {
+        host: host(),
+        sdk,
+        directory: "/tmp",
+        target: async () => ({
+          sessionID: "ses_root",
+          location: { directory: "/tmp", project: { id: "pro-1", directory: "/tmp", canonical: "/tmp" } },
+          agent: "build",
+          model: { providerID: "test", modelID: "first" },
+          variant: "low",
+          resume: false,
+        }),
+        agent: "build",
+        model: { providerID: "test", modelID: "first" },
+        variant: "low",
+        files: [],
+      },
+      {
+        createRuntimeLifecycle: async (input) => {
+          lifecycle = input
+          return {
+            footer: api,
+            onResize: () => () => {},
+            refreshTheme: () => {},
+            setTitle: () => {},
+            resetForReplay: () => Promise.resolve(),
+            close: () => Promise.resolve(),
+          }
+        },
+        streamTransport: Promise.resolve({
+          createSessionTransport: async (input) => {
+            await input.onCatalogRefresh?.()
+            ready.resolve()
+            return {
+              runPromptTurn: async () => {
+                prompts++
+              },
+              admitPromptTurn: async () => {},
+              waitForIdle: async () => {},
+              interruptActiveTurn: async () => {},
+              selectSubagent: () => {},
+              replayOnResize: async () => false,
+              close: async () => {},
+            }
+          },
+          formatUnknownError: (error: unknown) => String(error),
+        }),
+      },
+    )
+    await ready.promise
+    expect(await lifecycle.onEmptySubmit?.()).toBe(false)
+    expect(get).not.toHaveBeenCalled()
+    await lifecycle.onModelSelect?.({ providerID: "test", modelID: "second" })
+    expect(await lifecycle.onEmptySubmit?.()).toBe(true)
+    expect(switchModel).toHaveBeenCalledWith({
+      sessionID: "ses_root",
+      model: { providerID: "test", id: "second", variant: undefined },
+    })
+    expect(await lifecycle.onEmptySubmit?.()).toBe(false)
+    lifecycle.onVariantSelect?.("high")
+    expect(await lifecycle.onEmptySubmit?.()).toBe(true)
+    expect(selected.variant).toBe("high")
+    lifecycle.onVariantSelect?.("low")
+    lifecycle.onVariantSelect?.("high")
+    expect(await lifecycle.onEmptySubmit?.()).toBe(false)
+    expect(switchModel).toHaveBeenCalledTimes(2)
+    expect(prompts).toBe(0)
+    api.close()
+    await task
+  })
+
   test("resolves the default model reactively without blocking catalog startup", async () => {
     const sdk = OpenCode.make({ baseUrl: "https://opencode.test" })
     const events: FooterEvent[] = []

@@ -130,6 +130,7 @@ type PromptInput = {
   history?: Accessor<RunPrompt[]>
   queuedPrompts: Accessor<FooterQueuedPrompt[]>
   onQueuedPromptSteer: (inboxID: string) => Promise<boolean>
+  onEmptySubmit: () => boolean | Promise<boolean>
   onSubmit: (input: RunPrompt) => boolean | Promise<boolean>
   onCycle: () => void
   onInterrupt: () => boolean
@@ -1372,15 +1373,26 @@ export function createPromptState(input: PromptInput): PromptState {
     if (submitting) return
 
     if (!next.text.trim() && !next.parts.some((part) => part.type === "file")) {
-      const queued = delivery === "steer" ? input.queuedPrompts()[0] : undefined
-      if (queued) {
-        submitting = true
-        void input.onQueuedPromptSteer(queued.messageID).finally(() => {
+      submitting = true
+      void Promise.resolve()
+        .then(input.onEmptySubmit)
+        .then(async (applied) => {
+          if (!applied && delivery === "steer") {
+            const queued = input.queuedPrompts()[0]
+            if (queued) return input.onQueuedPromptSteer(queued.messageID)
+          }
+          input.onStatus(
+            applied
+              ? "model selection applied"
+              : input.state().phase === "running"
+                ? "waiting for current response"
+                : "empty prompt ignored",
+          )
+        })
+        .catch((error: unknown) => input.onStatus(error instanceof Error ? error.message : String(error)))
+        .finally(() => {
           submitting = false
         })
-        return
-      }
-      input.onStatus(input.state().phase === "running" ? "waiting for current response" : "empty prompt ignored")
       return
     }
 

@@ -208,6 +208,8 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
     model: undefined as RunInput["model"],
     variant: undefined as string | undefined,
   }
+  let selectionRevision = 0
+  let committedSelectionRevision = 0
   const savedVariant = await input.host.preferences.resolveVariant(ctx.model)
   const state: RuntimeState = {
     sdk: ctx.sdk,
@@ -291,6 +293,23 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       }
       await settleForm(next.sessionID, next.formID)
     },
+    onEmptySubmit: async () => {
+      if (selectionRevision === committedSelectionRevision) return false
+      await state.switching
+      await ensureSession()
+      const model = state.model ?? state.defaultModel
+      if (!model) return false
+      const selected = { providerID: model.providerID, id: model.modelID, variant: state.activeVariant }
+      const revision = selectionRevision
+      const current = (await state.sdk.session.get({ sessionID: state.sessionID })).model
+      const changed =
+        current?.providerID !== selected.providerID ||
+        current.id !== selected.id ||
+        (current.variant ?? "default") !== (selected.variant ?? "default")
+      if (changed) await state.sdk.session.switchModel({ sessionID: state.sessionID, model: selected })
+      if (selectionRevision === revision) committedSelectionRevision = revision
+      return changed
+    },
     onCycleVariant: () => {
       const model = state.model ?? state.defaultModel
       if (!model || state.variants.length === 0) {
@@ -301,6 +320,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
       if (!state.model) state.model = model
       state.activeVariant = cycleVariant(state.activeVariant, state.variants)
+      selectionRevision++
       void input.host.preferences.saveVariant(model, state.activeVariant)
       return {
         status: state.activeVariant ? `variant ${state.activeVariant}` : "variant default",
@@ -319,6 +339,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
       state.model = model
       state.activeVariant = undefined
       state.variants = variantsFor(state.providers, model)
+      selectionRevision++
       const switching = input.host.preferences.resolveVariant(model).then((saved) => {
         const current = state.model
         if (!current || current.providerID !== model.providerID || current.modelID !== model.modelID) {
@@ -359,8 +380,10 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
         }
       }
 
+      if (state.model === model && state.activeVariant === variant) return
       if (!state.model) state.model = model
       state.activeVariant = variant
+      selectionRevision++
       void input.host.preferences.saveVariant(model, state.activeVariant)
       return {
         status: state.activeVariant ? `variant ${state.activeVariant}` : "variant default",

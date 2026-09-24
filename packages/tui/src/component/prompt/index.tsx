@@ -1302,13 +1302,22 @@ export function Prompt(props: PromptProps) {
       await commitModel()
     }
     if (!trimmed) {
-      // Blank Enter in an existing session commits the composer's agent and
-      // model selection, then hands off to the route (queued prompt promotion).
-      await attempt("Failed to prepare session", async () => {
-        await commitSelection()
-        await props.onEmptySubmit?.()
-      })
-      return true
+      const modelChanged =
+        session?.model?.providerID !== selection.providerID ||
+        session?.model?.id !== selection.modelID ||
+        (session?.model?.variant ?? "default") !== (variant ?? "default")
+      if (session?.agent !== agent.id || modelChanged) {
+        return attempt("Failed to prepare session", async () => {
+          await prepareAgent()
+          if (modelChanged) await commitModel()
+        })
+      }
+      return (await Promise.resolve()
+        .then(() => props.onEmptySubmit?.())
+        .catch((error: unknown) => {
+          fail("Failed to steer queued prompt", error)
+          return false
+        })) === true
     }
     history.append(entry)
     if (currentMode === "shell") {

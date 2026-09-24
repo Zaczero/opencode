@@ -151,6 +151,7 @@ async function renderFooter(
     state?: Partial<FooterState>
     onCycle?: () => void
     onSubmit?: (prompt: RunPrompt) => boolean | Promise<boolean>
+    onEmptySubmit?: () => boolean | Promise<boolean>
     clipboard?: Pick<ClipboardService, "read">
     history?: RunPrompt[]
     view?: FooterView
@@ -195,6 +196,7 @@ async function renderFooter(
           mono={input.mono ?? false}
           miniSettings={miniSettings}
           onSubmit={input.onSubmit ?? (() => true)}
+          onEmptySubmit={input.onEmptySubmit}
           clipboard={input.clipboard}
           history={() => input.history ?? []}
           onPermissionReply={() => {}}
@@ -1320,6 +1322,29 @@ test("direct footer steers the oldest queued prompt from an empty composer", asy
     app.mockInput.pressEnter()
     await Bun.sleep(0)
     expect(steered).toEqual(["m-1"])
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("empty Enter applies a changed model before steering queued work", async () => {
+  const actions: string[] = []
+  const app = await renderFooter({
+    queuedPrompts: [{ messageID: "m-1", prompt: { text: "queued", parts: [] }, delivery: "queue" }],
+    onEmptySubmit: async () => {
+      actions.push("model")
+      return true
+    },
+    onQueuedPromptAction: async () => {
+      actions.push("steer")
+    },
+  })
+
+  try {
+    await app.renderOnce()
+    app.mockInput.pressEnter()
+    await Bun.sleep(0)
+    expect(actions).toEqual(["model"])
   } finally {
     app.cleanup()
   }

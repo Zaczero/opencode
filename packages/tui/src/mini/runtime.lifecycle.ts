@@ -76,6 +76,7 @@ export type LifecycleInput = {
   onAgentSelect?: (agent: string) => void
   onModelSelect?: (model: NonNullable<RunInput["model"]>) => CycleResult | void | Promise<CycleResult | void>
   onVariantSelect?: (variant: string | undefined) => CycleResult | void | Promise<CycleResult | void>
+  onEmptySubmit?: () => boolean | Promise<boolean>
   onInterrupt?: () => void
   onBackground?: () => void
   onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void>
@@ -262,6 +263,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
     onAgentSelect: input.onAgentSelect,
     onModelSelect: input.onModelSelect,
     onVariantSelect: input.onVariantSelect,
+    onEmptySubmit: input.onEmptySubmit,
     onInterrupt: input.onInterrupt,
     onBackground: input.onBackground,
     onQueuedPromptAction: input.onQueuedPromptAction,

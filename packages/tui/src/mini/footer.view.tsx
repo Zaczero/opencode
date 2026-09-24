@@ -102,6 +102,7 @@ type RunFooterViewProps = {
   history?: () => RunPrompt[]
   clipboard?: Pick<ClipboardService, "read">
   onSubmit: (input: RunPrompt) => boolean | Promise<boolean>
+  onEmptySubmit?: () => boolean | Promise<boolean>
   onPermissionReply: (input: PermissionReply) => void | Promise<void>
   onFormReply: (input: FormReply) => void | Promise<void>
   onFormCancel: (input: FormCancel) => void | Promise<void>
@@ -379,6 +380,7 @@ export function RunFooterView(props: RunFooterViewProps) {
     history: props.history,
     queuedPrompts: queue,
     onQueuedPromptSteer: (inboxID) => queuedPromptAction("steer", inboxID),
+    onEmptySubmit: props.onEmptySubmit ?? (() => false),
     onSubmit: props.onSubmit,
     onCycle: props.onCycle,
     onInterrupt: props.onInterrupt,

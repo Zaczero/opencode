@@ -209,6 +209,7 @@ const makeRunnerState = (compaction?: SessionRunnerModel.Resolved["compaction"])
     compaction,
     currentAccount: "runner-account",
     modelResolveHook: Effect.void,
+    pluginActivation: Effect.void,
     systemBaseline: "Initial context",
     systemRemoved: false,
     systemUnavailable: false,
@@ -421,7 +422,7 @@ const layer = Layer.unwrap(
       Permission.node.replace(permission),
       Config.node.replace(config),
       PluginSupervisor.node.replace(Layer.empty),
-      Plugin.node.replace(Layer.mock(Plugin.Service, { awaitActivation: Effect.void })),
+      Plugin.node.replace(Layer.mock(Plugin.Service, { awaitActivation: Effect.suspend(() => state.pluginActivation) })),
       SessionModelTransport.node.replace(modelTransport),
     ]
     const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
@@ -3384,6 +3385,24 @@ describe("SessionRunnerLLM", () => {
       "session.tool.success.2",
       "session.step.ended.1",
     ])
+  })
+
+  scenario("waits for plugin refresh before resolving the model at a continuation step", function* (s) {
+    yield* s.admit("Echo this")
+    yield* s.llm.push(TestLLM.tool("call-echo", "echo", { text: "hello" }), TestLLM.text("Done", "text-final"))
+
+    const tools = yield* s.blockTools()
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const run = yield* Effect.forkChild(s.resume)
+    yield* tools.started
+    s.pluginActivation = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+    yield* tools.release
+    yield* Deferred.await(entered).pipe(Effect.timeout("5 seconds"))
+    expect(s.requests).toHaveLength(1)
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(run)
+    expect(s.requests).toHaveLength(2)
   })
 
   scenario("reloads a model switch before a tool-driven continuation step", function* (s) {

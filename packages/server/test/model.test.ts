@@ -48,6 +48,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 for (const scenario of [
   { name: "configured buffer", auto: true, context: 200_000, threshold: 107_000 },
+  { name: "model compaction target", auto: true, context: 200_000, target: 90_000, threshold: 90_000 },
+  { name: "target above safe ceiling", auto: true, context: 200_000, target: 150_000, threshold: 107_000 },
   { name: "disabled auto compaction", auto: false, context: 200_000, threshold: undefined },
   { name: "unknown context size", auto: true, context: 0, threshold: undefined },
 ]) {
@@ -64,7 +66,16 @@ for (const scenario of [
               custom: {
                 package: "aisdk:@ai-sdk/openai-compatible",
                 settings: { apiKey: "secret" },
-                models: { chat: { limit: { context: scenario.context, input: 120_000, output: 32_000 } } },
+                models: {
+                  chat: {
+                    limit: {
+                      context: scenario.context,
+                      input: 120_000,
+                      output: 32_000,
+                      ...("target" in scenario ? { compaction: scenario.target } : {}),
+                    },
+                  },
+                },
               },
             },
           }),

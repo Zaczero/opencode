@@ -4,7 +4,7 @@ import { Schema } from "effect"
 import { Money } from "../money.js"
 import { Capabilities, Compatibility, Family, ID, VariantID } from "../model.js"
 import { Provider } from "../provider.js"
-import { optional } from "../schema.js"
+import { NonNegativeInt, optional } from "../schema.js"
 
 export const Settings = Schema.StructWithRest(
   Schema.Struct({
@@ -63,6 +63,7 @@ class Limit extends Schema.Class<Limit>("Config.Model.Limit")({
   context: Schema.Int.pipe(optional),
   input: Schema.Int.pipe(optional),
   output: Schema.Int.pipe(optional),
+  compaction: NonNegativeInt.pipe(optional),
 }) {}
 
 class Model extends Schema.Class<Model>("Config.Model")({

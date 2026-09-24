@@ -810,7 +810,7 @@ export const layer = Layer.effect(
         limit.input === undefined ? Number.POSITIVE_INFINITY : limit.input - config.buffer,
         context - Math.max(output, config.buffer),
       )
-      return Math.max(0, promptCeiling)
+      return Math.max(0, Math.min(promptCeiling, limit.compaction ?? Number.POSITIVE_INFINITY))
     }
     const required = (input: RequiredInput) => {
       // Run the completed checkpoint before considering another automatic compaction.

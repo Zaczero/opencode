@@ -68,6 +68,10 @@ describe("ConfigCompactionPlugin.Plugin", () => {
       yield* compaction.transform((editor) => editor.configure({ buffer: 13_000 }))
       yield* compaction.transform((editor) => editor.configure({ auto: false }))
       expect(yield* Fiber.join(updates)).toEqual([87_000, undefined])
+      expect(compaction.threshold({ ...limit, compaction: 50_000 })).toBeUndefined()
+      yield* compaction.transform((editor) => editor.configure({ auto: true }))
+      expect(compaction.threshold({ ...limit, compaction: 50_000 })).toBe(50_000)
+      expect(compaction.threshold({ ...limit, compaction: 95_000 })).toBe(87_000)
     }),
   )
 

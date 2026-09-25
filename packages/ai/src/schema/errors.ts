@@ -99,7 +99,7 @@ export class ProviderInternalError extends Schema.TaggedError<ProviderInternalEr
   },
 ) {}
 
-export const TransportType = Schema.Literals(["http", "websocket"])
+export const TransportType = Schema.Literals(["http", "websocket", "process"])
 export type TransportType = typeof TransportType.Type
 
 export const TransportOperation = Schema.Literals(["request", "read", "write"])

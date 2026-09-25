@@ -606,9 +606,13 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       providerFailed,
       failure: stepFailure,
       finish: stepSettlement,
+      // A provider that stops for its own tool (Claude Code's WebSearch) returns the result the model has
+      // not read yet; hosted tools that finish inside the response (OpenAI's) end with another reason.
       needsContinuation: Iterable.some(
         tools.values(),
-        (tool) => !tool.providerExecuted && (tool.called || tool.settled),
+        (tool) =>
+          (!tool.providerExecuted && (tool.called || tool.settled)) ||
+          (tool.providerExecuted && tool.settled && stepSettlement?.finish === "tool-calls"),
       ),
       interactive: interactiveStep(),
     }),

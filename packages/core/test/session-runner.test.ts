@@ -3274,10 +3274,11 @@ describe("SessionRunnerLLM", () => {
   scenario("projects reasoning and tool events without executing or continuing tools", function* (s) {
     yield* s.admit("Use tools")
 
+    // Provider-run tools answered inside the response, as OpenAI's hosted tools are, finish normally.
     yield* s.llm.push(
       TestLLM.complete(
         {
-          reason: { normalized: "tool-calls" },
+          reason: { normalized: "stop" },
           usage: {
             inputTokens: 10,
             nonCachedInputTokens: 8,
@@ -3326,7 +3327,7 @@ describe("SessionRunnerLLM", () => {
       Expected.user("Use tools"),
       {
         type: "assistant",
-        finish: "tool-calls",
+        finish: "stop",
         cost: 0,
         tokens: { input: 8, output: 3, reasoning: 1, cache: { read: 2, write: 0 } },
         content: [

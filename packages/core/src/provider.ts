@@ -65,6 +65,7 @@ const builtins = new Map<string, () => Promise<unknown>>([
   ["@opencode/ai/providers/azure/responses", () => import("@opencode/ai/providers/azure/responses")],
   ["@opencode/ai/providers/baseten", () => import("@opencode/ai/providers/baseten")],
   ["@opencode/ai/providers/cerebras", () => import("@opencode/ai/providers/cerebras")],
+  ["@opencode/ai/providers/claude-code", () => import("@opencode/ai/providers/claude-code")],
   ["@opencode/ai/providers/cloudflare-ai-gateway", () => import("@opencode/ai/providers/cloudflare-ai-gateway")],
   ["@opencode/ai/providers/cloudflare-workers-ai", () => import("@opencode/ai/providers/cloudflare-workers-ai")],
   ["@opencode/ai/providers/deepinfra", () => import("@opencode/ai/providers/deepinfra")],

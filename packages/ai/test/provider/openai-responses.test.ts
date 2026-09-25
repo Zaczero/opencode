@@ -2961,6 +2961,25 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("finishes a response whose only calls were hosted as stop", () =>
+    Effect.gen(function* () {
+      const search = { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "q" } }
+      const body = sseEvents(
+        { type: "response.output_item.added", item: { ...search, status: "in_progress" } },
+        { type: "response.output_item.done", item: search },
+        { type: "response.output_item.added", item: { type: "message", id: "msg_1" } },
+        { type: "response.output_text.delta", item_id: "msg_1", delta: "Found it" },
+        { type: "response.completed", response: { id: "resp_1" } },
+      )
+
+      const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)))
+
+      // The hosted search ran and was answered inside the response; nothing is left for the client to run.
+      expect(response.events).toContainEqual(expect.objectContaining({ type: "tool-call", providerExecuted: true }))
+      expect(response.finishReason).toEqual({ normalized: "stop", raw: undefined })
+    }),
+  )
+
   it.effect("parses reasoning summary stream fixtures", () =>
     Effect.gen(function* () {
       const body = sseEvents(

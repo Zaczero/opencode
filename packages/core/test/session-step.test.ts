@@ -156,3 +156,72 @@ for (const fixture of [
     }),
   )
 }
+
+for (const fixture of [
+  { finish: "tool-calls", continues: true },
+  { finish: "stop", continues: false },
+] as const) {
+  it.effect(`continues after a provider-run result only when the step ${fixture.finish}`, () =>
+    Effect.gen(function* () {
+      const db = (yield* Database.Service).db
+      const llm = yield* TestLLM.Test
+      const sessionID = Session.ID.create()
+      const steps = yield* SessionStep.make.pipe(
+        Effect.provide(
+          Layer.mock(Snapshot.Service)({
+            capture: () => Effect.succeed(Snapshot.ID.make("same")),
+            files: () => Effect.succeed([]),
+          }),
+        ),
+      )
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values({ id: sessionID, project_id: Project.ID.global, slug: "hosted", directory: "/project", version: "test" })
+        .run()
+      const model = SessionRunnerModel.resolved(
+        LanguageModel.make({ id: "test-model", provider: "test", route: OpenAIChat.route }),
+        {
+          capabilities: { tools: true, input: ["text"], output: ["text"] },
+          limit: { context: 100_000, output: 1_000 },
+          cost: [],
+        },
+      )
+      // Claude Code's WebSearch ends the model's turn at the call and answers it before the step ends; OpenAI's
+      // hosted search answers inside a response that then finishes normally.
+      yield* llm.push(
+        TestLLM.complete(
+          { reason: { normalized: fixture.finish } },
+          LLMEvent.toolCall({ id: "call-search", name: "web_search", input: { query: "q" }, providerExecuted: true }),
+          LLMEvent.toolResult({
+            id: "call-search",
+            name: "web_search",
+            result: { type: "json", value: { text: "results" } },
+            providerExecuted: true,
+          }),
+        ),
+      )
+      const result = yield* steps.attempt({
+        isLocationClosed: () => false,
+        sessionID,
+        assistantMessageID: SessionMessage.ID.create(),
+        agent: Agent.defaultID,
+        model,
+        prepared: {
+          retry: () => Effect.void,
+          request: LLM.request({ model: model.model, prompt: "Search" }),
+          options: {},
+          executeTool: () => Effect.die(new Error("a provider-run search is not executed locally")),
+        },
+        retry: () => Effect.succeed({ retry: false }),
+        recoverContinuation: true,
+        recoverOverflow: Effect.succeed(false),
+      })
+      expect(result).toMatchObject({ _tag: "Completed", needsContinuation: fixture.continues })
+    }),
+  )
+}

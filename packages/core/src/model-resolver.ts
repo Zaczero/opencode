@@ -316,7 +316,8 @@ const nativeCredentialSettings = (specifier: string, credential: Credential.Valu
 }
 
 function configuredCredential(model: Info) {
-  const key = model.settings?.apiKey ?? model.settings?.authToken ?? model.settings?.accessToken
+  // `account` is a non-secret login identity for providers whose credential stays with an external client.
+  const key = model.settings?.apiKey ?? model.settings?.authToken ?? model.settings?.accessToken ?? model.settings?.account
   return typeof key === "string" && key.length > 0 ? Credential.Key.make({ type: "key", key }) : undefined
 }
 

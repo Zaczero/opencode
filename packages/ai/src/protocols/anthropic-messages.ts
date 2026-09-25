@@ -38,9 +38,9 @@ const ADAPTER = "anthropic-messages"
 export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 export const PATH = "/messages"
 export const DEFAULT_MAX_TOKENS = 32_000
-const DEFAULT_EFFORT = "high"
+export const DEFAULT_EFFORT = "high"
 
-const SSE_EVENTS = new Set([
+export const SSE_EVENTS = new Set([
   "message",
   "message_start",
   "message_delta",
@@ -185,7 +185,7 @@ const AnthropicServerToolUseBlock = Schema.Struct({
 type AnthropicServerToolUseBlock = Schema.Schema.Type<typeof AnthropicServerToolUseBlock>
 
 // Server tool result blocks: web_search_tool_result, code_execution_tool_result,
-// and web_fetch_tool_result. The provider executes the tool and inlines the
+// web_fetch_tool_result, and advisor_tool_result. The provider executes the tool and inlines the
 // structured result into the assistant turn — there is no client tool_result
 // round-trip. We round-trip the structured `content` payload as opaque JSON so
 // the next request can echo it back when continuing the conversation.
@@ -193,6 +193,7 @@ const AnthropicServerToolResultType = Schema.Literals([
   "web_search_tool_result",
   "code_execution_tool_result",
   "web_fetch_tool_result",
+  "advisor_tool_result",
 ])
 type AnthropicServerToolResultType = Schema.Schema.Type<typeof AnthropicServerToolResultType>
 
@@ -571,13 +572,14 @@ const lowerServerToolCall = (part: ToolCallPart): AnthropicServerToolUseBlock =>
   input: part.input,
 })
 
-// Server tool result blocks are typed by name. Anthropic ships three today;
-// extend this list when new server tools land. The block content is the
+// Server tool result blocks are typed by name; extend this list when new server
+// tools land. The block content is the
 // structured payload returned by the provider, which we round-trip as-is.
 const serverToolResultType = (name: string): AnthropicServerToolResultType | undefined => {
   if (name === "web_search") return "web_search_tool_result"
   if (name === "code_execution") return "code_execution_tool_result"
   if (name === "web_fetch") return "web_fetch_tool_result"
+  if (name === "advisor") return "advisor_tool_result"
   return undefined
 }
 
@@ -815,6 +817,8 @@ const requireThinkingSignature = (request: LLMRequest) => {
 // 5 of the other supported Claude families. Treat later family versions as
 // compatible without assuming that every Anthropic Messages model is Claude.
 const supportsNativeSystemUpdates = (request: LLMRequest) => {
+  const override = request.model.compatibility?.supportsNativeSystemUpdates
+  if (override !== undefined) return override
   const match = /(?:^|[./])claude-(fable|haiku|mythos|opus|sonnet)-(\d+)(?:[.-](\d+))?/.exec(
     String(request.model.id).toLowerCase(),
   )
@@ -1133,8 +1137,11 @@ const mapFinishReason = (reason: string | null | undefined): FinishReason => {
 // expose that subset through `output_tokens_details.thinking_tokens`.
 const mapUsage = (usage: AnthropicUsage | undefined, providerMetadataKey: string): Usage | undefined => {
   if (!usage) return undefined
-  const iterations = usage.iterations?.length ? usage.iterations : [usage]
-  const last = usage.iterations?.at(-1)
+  // An advisor iteration is the advisor model reading the conversation uncached; it is billed to that model, so
+  // counting it here would report every advisor call as a cache miss of this one. It stays in the raw usage.
+  const own = usage.iterations?.filter((item) => item.type !== "advisor_message")
+  const iterations = own?.length ? own : [usage]
+  const last = own?.at(-1)
   const nonCached = ProviderShared.sumTokens(...iterations.map((item) => item.input_tokens ?? undefined))
   const cacheRead = ProviderShared.sumTokens(...iterations.map((item) => item.cache_read_input_tokens ?? undefined))
   const cacheWrite = ProviderShared.sumTokens(
@@ -1202,6 +1209,7 @@ const SERVER_TOOL_RESULT_NAMES: Record<AnthropicServerToolResultType, string> = 
   web_search_tool_result: "web_search",
   code_execution_tool_result: "code_execution",
   web_fetch_tool_result: "web_fetch",
+  advisor_tool_result: "advisor",
 }
 
 const isServerToolResultType = (type: string): type is AnthropicServerToolResultType => type in SERVER_TOOL_RESULT_NAMES

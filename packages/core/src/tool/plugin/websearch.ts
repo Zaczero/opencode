@@ -11,7 +11,7 @@ import { subscription } from "../../plugin/provider/openai.js"
 import { WebSearch } from "../../websearch.js"
 
 export const name = "websearch"
-/** OpenAI's hosted search; the provider runs it, so it is never executed here. */
+/** The provider's own search (OpenAI's hosted tool, Claude Code's WebSearch); never executed here. */
 export const hostedName = "web_search"
 export const NO_RESULTS = "No search results found. Please try a different query."
 const providerSelectionLock = Semaphore.makeUnsafe(1)
@@ -46,10 +46,10 @@ export const Plugin = {
         editor.add({
           name: hostedName,
           options: { codemode: false, permission: name },
-          description: "Search the web with OpenAI's hosted web search.",
+          description: "Search the web with the provider's own web search.",
           input: Schema.Struct({}),
           native: { openai: { type: "web_search", external_web_access: true } },
-          execute: () => Effect.fail(new ToolFailure({ message: "OpenAI runs web search itself" })),
+          execute: () => Effect.fail(new ToolFailure({ message: "The provider runs web search itself" })),
         })
         editor.add({
           name,
@@ -205,9 +205,14 @@ export const Plugin = {
           delete event.tools[hostedName]
           return
         }
-        // One search tool per model: a ChatGPT subscription searches with OpenAI's hosted tool, which only its
-        // Responses route runs; API keys and every other provider use the integration.
-        if (event.model.providerID === "openai" && subscription(event.credential)) delete event.tools[name]
+        // One search tool per model. A ChatGPT subscription searches with OpenAI's hosted tool, which only its
+        // Responses route runs, and Claude Code with its own WebSearch; API keys and every other provider use
+        // the integration.
+        if (
+          (event.model.providerID === "openai" && subscription(event.credential)) ||
+          event.model.providerID === "claude-code"
+        )
+          delete event.tools[name]
         else delete event.tools[hostedName]
       })
     yield* ctx.session.hook("context", hook)

@@ -548,6 +548,7 @@ const PROTOCOLS: Readonly<Record<string, Protocol>> = {
   "@opencode/ai/providers/zai-coding-plan/chat": zaiChat,
 
   "@opencode/ai/providers/anthropic": anthropicMessages,
+  "@opencode/ai/providers/claude-code": anthropicMessages,
   "@opencode/ai/providers/google-vertex/messages": anthropicMessages,
   "@opencode/ai/providers/alibaba/messages": alibabaMessages,
   "@opencode/ai/providers/meta/messages": anthropicMessages,

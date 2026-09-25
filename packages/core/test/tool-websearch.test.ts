@@ -118,7 +118,7 @@ const hookedToolNode = makeLocationNode({
 })
 
 describe("WebSearchTool per-model selection", () => {
-  it.effect("offers OpenAI hosted search to ChatGPT subscriptions and the integration elsewhere, never both", () =>
+  it.effect("offers provider search to ChatGPT subscriptions and Claude Code, the integration elsewhere", () =>
     Effect.gen(function* () {
       const websearch = yield* TestWebSearch.Service
       yield* websearch.transform((editor) =>
@@ -149,6 +149,7 @@ describe("WebSearchTool per-model selection", () => {
       expect(yield* offered("openai", { type: "key", key: "sk" })).toEqual(["read", "websearch"])
       expect(yield* offered("openai")).toEqual(["read", "websearch"])
       expect(yield* offered("anthropic", chatgpt)).toEqual(["read", "websearch"])
+      expect(yield* offered("claude-code")).toEqual(["read", "web_search"])
     }),
   )
 })

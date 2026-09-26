@@ -118,7 +118,7 @@ const hookedToolNode = makeLocationNode({
 })
 
 describe("WebSearchTool per-model selection", () => {
-  it.effect("offers OpenAI hosted search on OpenAI and the integration elsewhere, never both", () =>
+  it.effect("offers OpenAI hosted search to ChatGPT subscriptions and the integration elsewhere, never both", () =>
     Effect.gen(function* () {
       const websearch = yield* TestWebSearch.Service
       yield* websearch.transform((editor) =>
@@ -132,14 +132,23 @@ describe("WebSearchTool per-model selection", () => {
           Image.node.replace(imagePassthrough),
         ]),
       )
-      const offered = (providerID: string) =>
+      const offered = (providerID: string, credential?: object) =>
         Effect.gen(function* () {
-          const event = { model: { providerID, id: "model" }, tools: { websearch: {}, web_search: {}, read: {} } }
+          const event = {
+            model: { providerID, id: "model" },
+            credential,
+            tools: { websearch: {}, web_search: {}, read: {} },
+          }
           yield* hooks.get("context")!(event as never)
           return Object.keys(event.tools).toSorted()
         })
-      expect(yield* offered("openai")).toEqual(["read", "web_search"])
-      expect(yield* offered("anthropic")).toEqual(["read", "websearch"])
+      const chatgpt = { type: "oauth", methodID: "chatgpt-browser", refresh: "r", access: "a", expires: 0 }
+      expect(yield* offered("openai", chatgpt)).toEqual(["read", "web_search"])
+      expect(yield* offered("openai", { ...chatgpt, methodID: "chatgpt-headless" })).toEqual(["read", "web_search"])
+      // The hosted tool runs only on the Responses route a subscription uses; API keys may use Chat Completions.
+      expect(yield* offered("openai", { type: "key", key: "sk" })).toEqual(["read", "websearch"])
+      expect(yield* offered("openai")).toEqual(["read", "websearch"])
+      expect(yield* offered("anthropic", chatgpt)).toEqual(["read", "websearch"])
     }),
   )
 })

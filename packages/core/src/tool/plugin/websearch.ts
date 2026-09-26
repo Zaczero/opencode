@@ -7,6 +7,7 @@ import { Effect, Schema, Semaphore } from "effect"
 import { HttpClientError } from "effect/unstable/http"
 import { Form } from "../../form.js"
 import { Permission } from "../../permission.js"
+import { subscription } from "../../plugin/provider/openai.js"
 import { WebSearch } from "../../websearch.js"
 
 export const name = "websearch"
@@ -204,8 +205,9 @@ export const Plugin = {
           delete event.tools[hostedName]
           return
         }
-        // One search tool per model: OpenAI searches natively, every other provider uses the integration.
-        if (event.model.providerID === "openai") delete event.tools[name]
+        // One search tool per model: a ChatGPT subscription searches with OpenAI's hosted tool, which only its
+        // Responses route runs; API keys and every other provider use the integration.
+        if (event.model.providerID === "openai" && subscription(event.credential)) delete event.tools[name]
         else delete event.tools[hostedName]
       })
     yield* ctx.session.hook("context", hook)

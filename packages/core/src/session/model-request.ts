@@ -232,7 +232,14 @@ export const layer = Layer.effect(
         ),
       )
       const shaped = yield* shape(
-        { sessionID: session.id, model: model.ref, system: input.system, messages: input.messages, options: {} },
+        {
+          sessionID: session.id,
+          model: model.ref,
+          credential: model.credential,
+          system: input.system,
+          messages: input.messages,
+          options: {},
+        },
         Object.fromEntries(Array.from(given, ([d, t]) => [t.name, d])),
       )
       // Match by identity first, then by key. Entries matching neither were invented by a

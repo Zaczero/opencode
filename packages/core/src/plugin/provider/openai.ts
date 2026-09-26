@@ -28,6 +28,10 @@ const headlessMethodID = Integration.MethodID.make("chatgpt-headless")
 const codexAllowed = new Set(["gpt-5.5", "gpt-5.3-codex-spark"])
 const codexDisallowed = new Set(["gpt-5.5-pro", "gpt-5.6"])
 
+/** A ChatGPT subscription login, whose requests go to the Codex backend rather than the API. */
+export const subscription = (credential: Credential.Value | undefined): credential is Credential.OAuth =>
+  credential?.type === "oauth" && (credential.methodID === browserMethodID || credential.methodID === headlessMethodID)
+
 type Pkce = {
   verifier: string
   challenge: string
@@ -243,11 +247,7 @@ export const OpenAIPlugin = define({
       const credential = connection
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
         : undefined
-      chatgpt =
-        credential?.type === "oauth" &&
-        (credential.methodID === browserMethodID || credential.methodID === headlessMethodID)
-          ? credential
-          : undefined
+      chatgpt = subscription(credential) ? credential : undefined
     })
 
     yield* ctx.integration.transform((editor) => {
@@ -341,10 +341,7 @@ export const OpenAIPlugin = define({
       "model.request",
       (evt) =>
         Effect.sync(() => {
-          if (
-            evt.credential?.type !== "oauth" ||
-            (evt.credential.methodID !== browserMethodID && evt.credential.methodID !== headlessMethodID)
-          ) {
+          if (!subscription(evt.credential)) {
             if (evt.baseURL === codexBaseURL) evt.baseURL = "https://api.openai.com/v1"
             return
           }

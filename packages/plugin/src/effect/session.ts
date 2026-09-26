@@ -26,6 +26,8 @@ export type SessionRequestOptions = Types.DeepMutable<GenerationOptionsFields> &
 export interface SessionRequest {
   readonly sessionID: Session.ID
   readonly model: Model.Ref
+  /** The credential used to construct this request, rather than the currently selected account. */
+  readonly credential?: Credential.Value
   system: Array<SystemPart>
   messages: Array<Message>
   options: SessionRequestOptions

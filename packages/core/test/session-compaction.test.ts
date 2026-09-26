@@ -324,6 +324,14 @@ it.effect("auto compaction estimates current content against the buffered prompt
     const grown = { ...input(79_000, contextLimited), messages: [{ ...assistant, content: [tool] }] }
     expect(SessionCompaction.estimateTokens(grown)).toBe(80_000)
     expect(compaction.required(grown)).toBe(true)
+    // An advisor answering mid-response bills the input of both passes; the next request carries one context.
+    const advised = input(158_000, contextLimited).messages[0]
+    expect(
+      SessionCompaction.estimateTokens({
+        ...grown,
+        messages: [{ ...advised, content: [tool], tokens: { ...advised.tokens!, context: 79_000 } }],
+      }),
+    ).toBe(80_000)
     // After an account switch the old usage counted provider state that is no longer sent: estimate from text.
     const switched = { ...grown, resolved: { ...grown.resolved, account: { identity: "other", scope: "other" } } }
     expect(SessionCompaction.estimateTokens(switched)).toBe(1_022)

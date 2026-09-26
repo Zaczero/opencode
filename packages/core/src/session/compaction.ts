@@ -16,6 +16,7 @@ import type { StreamOptions } from "@opencode/ai/route"
 import { Model } from "@opencode/schema/model"
 import type { SessionCompactionResult } from "@opencode/plugin/effect/session"
 import { SessionError } from "@opencode/schema/session-error"
+import { TokenUsage } from "@opencode/schema/token-usage"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Bus } from "../bus.js"
 import { Location } from "../location.js"
@@ -191,15 +192,7 @@ export const estimateTokens = (input: RequiredInput) => {
   )
     .filter((message) => message.role !== "assistant" || message.id !== last?.id)
     .reduce((sum, message) => sum + message.content.reduce((sum, part) => sum + estimatePart(part), 0), 0)
-  if (last?.type === "assistant" && last.tokens)
-    return (
-      added +
-      last.tokens.input +
-      last.tokens.cache.read +
-      last.tokens.cache.write +
-      last.tokens.output +
-      last.tokens.reasoning
-    )
+  if (last?.type === "assistant" && last.tokens) return added + TokenUsage.contextTokens(last.tokens)
   const transcript = SessionModelRequest.baseTranscript({
     agent: input.context.agent.info,
     model: input.resolved,

@@ -16,6 +16,7 @@ export const tokens = (usage: Usage | undefined): TokenUsage.Info => ({
     read: safe(usage?.cacheReadInputTokens),
     write: safe(usage?.cacheWriteInputTokens),
   },
+  ...(usage?.contextTokens === undefined ? {} : { context: safe(usage.contextTokens) }),
 })
 
 // TODO(#35765): Use Copilot's reported billed amount once billing has a dedicated typed runtime contract.

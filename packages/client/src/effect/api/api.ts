@@ -140,6 +140,7 @@ export type SessionStatsOutput = {
     readonly output: number
     readonly reasoning: number
     readonly cache: { readonly read: number; readonly write: number }
+    readonly context?: number | undefined
   }
   readonly cost: number & Brand.Brand<"Money.USD">
   readonly tools:
@@ -181,6 +182,7 @@ export type SessionStatsOutput = {
       readonly output: number
       readonly reasoning: number
       readonly cache: { readonly read: number; readonly write: number }
+      readonly context?: number | undefined
     }
     readonly cost: number & Brand.Brand<"Money.USD">
   }>
@@ -864,6 +866,7 @@ export type SessionLogOutput =
               readonly output: number
               readonly reasoning: number
               readonly cache: { readonly read: number; readonly write: number }
+              readonly context?: number | undefined
             }
             readonly snapshot?: (string & Brand.Brand<"Snapshot.ID">) | undefined
             readonly files?: ReadonlyArray<RelativePath> | undefined
@@ -895,6 +898,7 @@ export type SessionLogOutput =
                   readonly output: number
                   readonly reasoning: number
                   readonly cache: { readonly read: number; readonly write: number }
+                  readonly context?: number | undefined
                 }
               | undefined
             readonly snapshot?: (string & Brand.Brand<"Snapshot.ID">) | undefined
@@ -1203,6 +1207,7 @@ export type SessionLogOutput =
                   readonly output: number
                   readonly reasoning: number
                   readonly cache: { readonly read: number; readonly write: number }
+                  readonly context?: number | undefined
                 }
               | undefined
           }
@@ -1231,6 +1236,7 @@ export type SessionLogOutput =
                   readonly output: number
                   readonly reasoning: number
                   readonly cache: { readonly read: number; readonly write: number }
+                  readonly context?: number | undefined
                 }
               | undefined
           }
@@ -1298,6 +1304,7 @@ export type SessionLogOutput =
               readonly output: number
               readonly reasoning: number
               readonly cache: { readonly read: number; readonly write: number }
+              readonly context?: number | undefined
             }
           }
         }

@@ -220,7 +220,9 @@ const table = sqliteTable("session", {
 - Model responses expose `limit.compaction` from `SessionCompaction.threshold`; its
   state changes refresh the catalog. Context meters share the Client's
   `context-usage` helper, round up, and clamp at 100%. The numerator is reported
-  usage; automatic compaction also estimates content added since that report.
+  usage, counted through `TokenUsage.contextTokens`: the provider's reported context
+  size replaces billed input when one response bills several passes. Automatic
+  compaction anchors on the same count and also estimates content added since.
 - Only root sessions expose `question`; children report decisions to their parent.
   `subagent_interrupt` targets direct children, cancels their background shells, and
   distinguishes a settled stop from an interrupt still awaiting cleanup. Cancelled

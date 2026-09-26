@@ -1,3 +1,4 @@
+import { TokenUsage } from "@opencode/schema/token-usage"
 import type { ModelInfo, SessionMessageAssistant, SessionMessageInfo } from "./promise/generated/types.js"
 
 export function lastAssistantWithUsage(messages: ReadonlyArray<SessionMessageInfo>, boundary?: string) {
@@ -17,7 +18,7 @@ export function contextUsage(
   tokens: NonNullable<SessionMessageAssistant["tokens"]>,
   limit?: Pick<ModelInfo["limit"], "context" | "compaction">,
 ) {
-  const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+  const total = TokenUsage.contextTokens(tokens)
   const ceiling = limit?.compaction ?? (limit && limit.context > 0 ? limit.context : undefined)
   return {
     tokens: total,

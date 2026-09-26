@@ -35,6 +35,7 @@ export type TokenUsageInfo = {
   output: number
   reasoning: number
   cache: { read: number; write: number }
+  context?: number
 }
 
 export type SessionMetadata = { [x: string]: JsonValue }
@@ -2149,7 +2150,7 @@ export type ConfigEntry =
                       cache?: { read?: MoneyUSDPerMillionTokens; write?: MoneyUSDPerMillionTokens }
                     }>
                 disabled?: boolean
-                limit?: { context?: number; input?: number; output?: number }
+                limit?: { context?: number; input?: number; output?: number; compaction?: number }
               }
             }
           }
@@ -2981,6 +2982,7 @@ export type SessionImportInput = {
         readonly output: number
         readonly reasoning: number
         readonly cache: { readonly read: number; readonly write: number }
+        readonly context?: number
       }
       readonly outcome?: "succeeded" | "failed" | "interrupted"
       readonly time: {
@@ -3203,6 +3205,7 @@ export type SessionImportInput = {
             readonly output: number
             readonly reasoning: number
             readonly cache: { readonly read: number; readonly write: number }
+            readonly context?: number
           }
           readonly error?: { readonly type: string; readonly message: string; readonly status?: number }
           readonly retry?: {
@@ -3253,6 +3256,7 @@ export type SessionImportInput = {
                 readonly output: number
                 readonly reasoning: number
                 readonly cache: { readonly read: number; readonly write: number }
+                readonly context?: number
               }
             }
           | {
@@ -3269,6 +3273,7 @@ export type SessionImportInput = {
                 readonly output: number
                 readonly reasoning: number
                 readonly cache: { readonly read: number; readonly write: number }
+                readonly context?: number
               }
             }
         )
@@ -3301,6 +3306,7 @@ export type SessionImportInput = {
         readonly output: number
         readonly reasoning: number
         readonly cache: { readonly read: number; readonly write: number }
+        readonly context?: number
       }
       readonly outcome?: "succeeded" | "failed" | "interrupted"
       readonly time: {
@@ -3523,6 +3529,7 @@ export type SessionImportInput = {
             readonly output: number
             readonly reasoning: number
             readonly cache: { readonly read: number; readonly write: number }
+            readonly context?: number
           }
           readonly error?: { readonly type: string; readonly message: string; readonly status?: number }
           readonly retry?: {
@@ -3573,6 +3580,7 @@ export type SessionImportInput = {
                 readonly output: number
                 readonly reasoning: number
                 readonly cache: { readonly read: number; readonly write: number }
+                readonly context?: number
               }
             }
           | {
@@ -3589,6 +3597,7 @@ export type SessionImportInput = {
                 readonly output: number
                 readonly reasoning: number
                 readonly cache: { readonly read: number; readonly write: number }
+                readonly context?: number
               }
             }
         )
@@ -3621,6 +3630,7 @@ export type SessionImportInput = {
         readonly output: number
         readonly reasoning: number
         readonly cache: { readonly read: number; readonly write: number }
+        readonly context?: number
       }
       readonly outcome?: "succeeded" | "failed" | "interrupted"
       readonly time: {
@@ -3843,6 +3853,7 @@ export type SessionImportInput = {
             readonly output: number
             readonly reasoning: number
             readonly cache: { readonly read: number; readonly write: number }
+            readonly context?: number
           }
           readonly error?: { readonly type: string; readonly message: string; readonly status?: number }
           readonly retry?: {
@@ -3893,6 +3904,7 @@ export type SessionImportInput = {
                 readonly output: number
                 readonly reasoning: number
                 readonly cache: { readonly read: number; readonly write: number }
+                readonly context?: number
               }
             }
           | {
@@ -3909,6 +3921,7 @@ export type SessionImportInput = {
                 readonly output: number
                 readonly reasoning: number
                 readonly cache: { readonly read: number; readonly write: number }
+                readonly context?: number
               }
             }
         )

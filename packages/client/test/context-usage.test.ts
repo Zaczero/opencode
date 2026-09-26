@@ -65,6 +65,15 @@ test("context usage counts input, output, reasoning, and both cache categories",
   ).toEqual({ tokens: 43, percent: 54 })
 })
 
+test("context usage takes the reported context size over input billed for several passes", () => {
+  expect(
+    contextUsage(
+      { input: 20, output: 4, reasoning: 2, cache: { read: 180, write: 10 }, context: 105 },
+      { context: 200, compaction: 150 },
+    ),
+  ).toEqual({ tokens: 111, percent: 74 })
+})
+
 test.each([
   { name: "empty usage", tokens: 0, limit: { context: 1_000, compaction: 800 }, percent: 0 },
   { name: "nonzero usage", tokens: 1, limit: { context: 1_000, compaction: 800 }, percent: 1 },
